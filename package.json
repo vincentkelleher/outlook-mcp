@@ -1,0 +1,22 @@
+{
+  "name": "outlook-skill",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "outlook": "bun scripts/outlook.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage"
+  },
+  "dependencies": {
+    "@azure/msal-node": "5.5.0",
+    "@microsoft/microsoft-graph-client": "3.0.7",
+    "commander": "15.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "prettier": "^3.9.6"
+  }
+}
