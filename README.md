@@ -2,6 +2,8 @@
 
 # Outlook Skill
 
+![](./doc/banner.png)
+
 **A small, secure command-line bridge to your Outlook mailbox.**
 
 Search, list, and read email through Microsoft Graph with device-code sign-in,
@@ -16,6 +18,10 @@ silent token refresh, and JSON that is easy for people and agents to use.
 - Retrieves a message with its full plain-text body
 - Stores the refreshable sign-in cache locally with owner-only permissions
 - Keeps email data on stdout as JSON and diagnostics on stderr
+
+> [!IMPORTANT]
+> This skill only supports basic Outlook email tasks at the moment as they match my personal needs.
+> This can evolve with time, don't hesitate to contribute 🤝
 
 ## Setup
 
