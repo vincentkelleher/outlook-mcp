@@ -115,6 +115,27 @@ export function getEmail(id: string) {
     .get();
 }
 
+export async function getAttachments(messageId: string) {
+  const client = graphClient();
+  const path = `/me/messages/${encodeURIComponent(messageId)}/attachments`;
+  const attachments: { id: string }[] = [];
+  for (
+    let page = await client.api(path).get();
+    page;
+    page = page["@odata.nextLink"]
+      ? await client.api(page["@odata.nextLink"]).get()
+      : undefined
+  ) {
+    attachments.push(...page.value);
+  }
+
+  return Promise.all(
+    attachments.map(({ id }) =>
+      client.api(`${path}/${encodeURIComponent(id)}`).get(),
+    ),
+  );
+}
+
 export async function searchEmails(query: string, top = 10) {
   return (
     await graphClient()
@@ -173,6 +194,13 @@ export async function main(argv = Bun.argv) {
     .description("Get one email with its full text content")
     .action(async (id) =>
       console.log(JSON.stringify(await getEmail(id), null, 2)),
+    );
+
+  emails
+    .command("attachments <message-id>")
+    .description("Get an email's attachments")
+    .action(async (messageId) =>
+      console.log(JSON.stringify(await getAttachments(messageId), null, 2)),
     );
 
   emails

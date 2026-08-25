@@ -83,6 +83,9 @@ bun scripts/outlook.ts emails search "subject:invoice" --limit 25
 # Read a message returned by list or search
 bun scripts/outlook.ts emails get "message-id"
 
+# Get its attachments; file content is base64 in contentBytes
+bun scripts/outlook.ts emails attachments "message-id"
+
 # Remove the saved session from this machine
 bun scripts/outlook.ts logout
 ```
@@ -110,7 +113,9 @@ bun scripts/outlook.ts emails list --limit 5 | jq '.[].subject'
 ]
 ```
 
-Use an item's `id` with `emails get` when you need its complete text content.
+Use an item's `id` with `emails get` when you need its complete text content, or
+`emails attachments` for complete attachment data. File attachment payloads are
+base64-encoded in `contentBytes`.
 
 ## Development
 

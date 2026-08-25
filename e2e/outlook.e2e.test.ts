@@ -42,6 +42,7 @@ test("CLI exposes every documented command", async () => {
   expect(emails.exitCode).toBe(0);
   expect(emails.stdout).toContain("list");
   expect(emails.stdout).toContain("get <id>");
+  expect(emails.stdout).toContain("attachments <message-id>");
   expect(emails.stdout).toContain("search [options] <query>");
 });
 
@@ -78,6 +79,7 @@ test("email commands report a missing session", async () => {
   for (const args of [
     ["emails", "list"],
     ["emails", "get", "message-id"],
+    ["emails", "attachments", "message-id"],
     ["emails", "search", "test"],
   ]) {
     const result = await outlook(home, ...args);

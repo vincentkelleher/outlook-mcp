@@ -76,9 +76,18 @@ mock.module("@microsoft/microsoft-graph-client", () => ({
             filter: (value: string) => ((request.filter = value), chain),
             search: (value: string) => ((request.search = value), chain),
             get: async () =>
-              path.includes("/messages/")
-                ? { id: "message" }
-                : { value: ["message"] },
+              path === "/next-attachments"
+                ? { value: [{ id: "two" }] }
+                : path.endsWith("/attachments")
+                  ? {
+                      value: [{ id: "one/two" }],
+                      "@odata.nextLink": "/next-attachments",
+                    }
+                  : path.includes("/attachments/")
+                    ? { id: "attachment", contentBytes: "ZmlsZQ==" }
+                    : path.includes("/messages/")
+                      ? { id: "message" }
+                      : { value: ["message"] },
           };
           return chain;
         },
@@ -98,6 +107,7 @@ const {
   msalClient,
   searchEmails,
   getEmail,
+  getAttachments,
 } = await import("../scripts/outlook.ts");
 const tempCache = () =>
   join(
@@ -216,6 +226,10 @@ test("mail requests select, filter, escape, and limit the documented data", asyn
   reset();
   expect(await listEmails(true, 2)).toEqual(["message"]);
   expect(await getEmail("a/b")).toEqual({ id: "message" });
+  expect(await getAttachments("a/b")).toEqual([
+    { id: "attachment", contentBytes: "ZmlsZQ==" },
+    { id: "attachment", contentBytes: "ZmlsZQ==" },
+  ]);
   expect(await searchEmails('a"b\\c', 3)).toEqual(["message"]);
 
   expect(state.requests).toEqual([
@@ -228,6 +242,12 @@ test("mail requests select, filter, escape, and limit the documented data", asyn
       path: "/me/messages/a%2Fb",
       headers: [["Prefer", 'outlook.body-content-type="text"']],
     }),
+    expect.objectContaining({ path: "/me/messages/a%2Fb/attachments" }),
+    expect.objectContaining({ path: "/next-attachments" }),
+    expect.objectContaining({
+      path: "/me/messages/a%2Fb/attachments/one%2Ftwo",
+    }),
+    expect.objectContaining({ path: "/me/messages/a%2Fb/attachments/two" }),
     expect.objectContaining({
       path: "/me/messages",
       headers: [["ConsistencyLevel", "eventual"]],
@@ -252,6 +272,7 @@ test("limits and CLI actions use the correct command maxima", async () => {
     await main(["bun", "outlook", "login"]);
     await main(["bun", "outlook", "emails", "list", "--limit", "100"]);
     await main(["bun", "outlook", "emails", "get", "id"]);
+    await main(["bun", "outlook", "emails", "attachments", "id"]);
     await main([
       "bun",
       "outlook",
@@ -264,9 +285,13 @@ test("limits and CLI actions use the correct command maxima", async () => {
   } finally {
     console.log = originalLog;
   }
-  expect(output).toHaveLength(3);
+  expect(output).toHaveLength(4);
   expect(state.requests.map((request) => request.top)).toEqual([
     100,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     undefined,
     1000,
   ]);
