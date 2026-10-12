@@ -145,13 +145,22 @@ Never a client secret: this stays a public client on the device-code flow.
 
 ## 8. Distribution without npm
 
-Verified here: `npx -y github:vincentkelleher/outlook-skill` **already clones and installs the repo today** — it fails only with "could not determine executable to run" because `package.json` has no `bin`. And `npm pack` works with `private: true` (tested end to end with `npx -y ./pkg.tgz`), so we can ship tarballs without ever risking an accidental npm publish.
+Observed here on npm 11.19.0: `npx -y github:vincentkelleher/outlook-skill` clones and installs the repo, failing only with "could not determine executable to run" because there is no `bin` yet. `npm pack` also works with `private: true` (tested end to end with a local tarball), so we can ship release artefacts without ever risking an accidental npm publish.
 
-Three paths, in order of recommendation:
+**That observation is weaker than it looks, and the docs explain why.** Source-checked against docs.npmjs.com:
 
-1. **Clone + build (daily driver).** `git clone && npm ci && npm run build`, then point clients at the absolute `dist/index.js` path. No per-launch install, no network at startup.
-2. **`outlook-mcp config <client> [--write]`** — added in Phase 3 precisely because there is no npm one-liner: resolves its own absolute path and prints (or idempotently writes) the exact snippet for `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`, `gemini-cli`, `opencode`, or `generic`. Removes the most common failure mode: hand-editing JSON/TOML with a wrong path.
-3. **Git / release-tarball one-liners.** `npx -y github:vincentkelleher/outlook-skill#v1.0.0` (works once `bin` + `prepare` land; costs a clone-and-install on cold cache, roughly 10-30 s, which can exceed impatient MCP startup timeouts), and a built `.tgz` attached to the GitHub Release for a fast, pinned, no-build URL install.
+- A git specifier is documented for `npm install` and `package.json` dependencies, **not** for `npm exec`/`npx`, whose pages define only `<pkg>[@<version>]`. The "npx accepts any specifier" claim traces back to the deprecated pre-npm-7 standalone `libnpx` man page. So `npx github:…` works, but it is undocumented surface, not supported surface.
+- `prepare` does run for git dependencies and is the documented place to compile TypeScript — our design was right — but **npm v12 flips `allowScripts` off and `--allow-git` / `--allow-remote` to `none` by default**, explicitly blocking `prepare` from git, file, and link dependencies. Warnings already appear from npm 11.16.0, which is below the 11.19.0 used here.
+- With no `.npmignore`, **`.gitignore` is used instead**, so a gitignored `dist/` is a documented exclusion risk; `files` must list `dist` explicitly.
+- `engines` is **advisory** unless the user sets `engine-strict`, so it is not a runtime guard, only a warning.
+- `npm install <tarball url>` *is* documented, with testable requirements: `.tar`/`.tar.gz`/`.tgz`, one wrapping directory, and a `package.json` with `name` and `version`. Crucially **`prepare` does not run for tarball-URL installs**, so the release asset must be an `npm pack` artefact and never GitHub's auto-generated source archive — attaching the wrong file is the most likely failure mode.
+- Whether `npx` re-clones a git specifier per invocation is **UNVERIFIED**; npm's caching note covers package names only.
+
+Paths, in order of how defensible they are:
+
+1. **Clone + build (the only path we call supported).** `git clone && npm ci && npm run build`, then point clients at the absolute `dist/index.js`. Uses only documented behaviour and is immune to the v12 default flips.
+2. **`outlook-mcp config <client> [--write]`** — added precisely because there is no dependable registry one-liner: resolves its own absolute path and prints (or idempotently writes) the exact snippet for `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`, `gemini-cli`, `opencode`, or `generic`. Removes the most common failure mode, which is hand-editing JSON/TOML with a wrong path.
+3. **Best-effort one-liners, labelled as such.** `npx -y github:vincentkelleher/outlook-skill#v1.0.0` and an `npm pack` artefact attached to the GitHub Release. Never describe these as supported. Each carries its warnings inline: may be blocked by `--allow-git` / `--allow-remote` / `allowScripts` policy; needs `git` on the PATH for the git form; pin to an immutable tag or sha rather than a floating branch that npm rebuilds every install; and a cold clone-and-install can exceed a client's MCP startup budget (Codex defaults to 10 s). CI must generate the artefact with `npm pack` and assert that it contains `dist/` and a `package.json` with `name` and `version`.
 
 ### Verified client rules (source-checked; `docs/clients.md` and the `config` command must follow these)
 
@@ -198,7 +207,7 @@ Public client, no secret, `0700`/`0600` cache with atomic writes, no telemetry, 
 
 **Phase 3 — drafts (1 day).** Create/reply/forward/update/list/delete + `add_attachment` with the 3 MB guard; `--readonly`; scope bump to `Mail.ReadWrite`; **no-send invariant tests**. Acceptance: a draft created by a test fake appears with the right recipients/subject, an over-limit or disallowed recipient fails with a clear message and no partial write, and the invariant tests pass.
 
-**Phase 4 — distribution (1 day).** `config <client> [--write]`; README rewritten MCP-first with the skill section kept; `skills/` move + `npx skills add .` verified; `docs/clients.md` verified for real on Pi, Claude Code, Codex, and VS Code; GitHub Release with the built `.tgz`; SECURITY.md, CHANGELOG.md, migration note for the old `scripts/outlook.ts` path.
+**Phase 4 — distribution (1 day).** `config <client> [--write]`; README rewritten MCP-first with the skill section kept; `skills/` move + `npx skills add .` verified; `docs/clients.md` verified for real on Pi, Claude Code, Codex, and VS Code; CI job that runs `npm pack` and asserts the artefact contains `dist/` plus a `package.json` with `name` and `version`, so a wrong release asset cannot ship; SECURITY.md, CHANGELOG.md, migration note for the old `scripts/outlook.ts` path.
 
 Total ≈ 5 working days.
 
