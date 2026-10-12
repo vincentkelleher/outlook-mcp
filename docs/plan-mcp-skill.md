@@ -153,19 +153,28 @@ Three paths, in order of recommendation:
 2. **`outlook-mcp config <client> [--write]`** — added in Phase 3 precisely because there is no npm one-liner: resolves its own absolute path and prints (or idempotently writes) the exact snippet for `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`, `gemini-cli`, `opencode`, or `generic`. Removes the most common failure mode: hand-editing JSON/TOML with a wrong path.
 3. **Git / release-tarball one-liners.** `npx -y github:vincentkelleher/outlook-skill#v1.0.0` (works once `bin` + `prepare` land; costs a clone-and-install on cold cache, roughly 10-30 s, which can exceed impatient MCP startup timeouts), and a built `.tgz` attached to the GitHub Release for a fast, pinned, no-build URL install.
 
-Client matrix for `docs/clients.md`:
+### Verified client rules (source-checked; `docs/clients.md` and the `config` command must follow these)
 
-| Client | How |
-| --- | --- |
-| Pi | `pi mcp add outlook -- node /abs/dist/index.js`, then add `"description"` and `"exposure": "direct"` in `~/.pi/agent/mcp.json` (Pi defaults MCP tools to codemode, i.e. not declared to the model). Skill → `~/.agents/skills/`. |
-| Claude Code | `claude mcp add outlook --scope user -e OUTLOOK_OAUTH_CLIENT_ID=… -- node /abs/dist/index.js`; project scope via the bundled `.mcp.json`. |
-| Claude Desktop | Settings → Developer manual entry; `.mcpb` bundle is backlog. |
-| Codex / ChatGPT | `codex mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID=… -- node /abs/dist/index.js` → `~/.codex/config.toml` `[mcp_servers.outlook]`. |
-| VS Code / GitHub Copilot | `.vscode/mcp.json` (`servers`, `${input:…}` replaced with `${OUTLOOK_OAUTH_CLIENT_ID}`) or `code --add-mcp "…"`. |
-| Cursor | `~/.cursor/mcp.json` / `cursor mcp add`. |
-| Gemini CLI | `gemini mcp add outlook node /abs/dist/index.js` / `.gemini/settings.json`. |
-| OpenCode | `opencode.json` local mcp entry (split `command` array, `{env:NAME}` → `${NAME}`). |
-| Hermes, OpenClaw, Deepseek harness, generic harnesses | Generic stdio JSON snippet + `npx skills add …`. |
+Four clients were verified against official documentation. `<DIST>` means the absolute path to `dist/index.js`.
+
+| Client | Server name | Add command | Env strategy | Units that bite |
+| --- | --- | --- | --- | --- |
+| Pi | `outlook` | `pi mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="$OUTLOOK_OAUTH_CLIENT_ID" --exposure direct --description "Read, search, and draft Outlook mail" -- node <DIST>` then `pi mcp list` to verify | `"${OUTLOOK_OAUTH_CLIENT_ID}"` in `env` is documented | `timeout` is **seconds** (default 60); first prompt waits 10 s for `direct` tools only |
+| Claude Code | `outlook` | `claude mcp add outlook --scope user --env OUTLOOK_OAUTH_CLIENT_ID="…" --transport stdio -- node <DIST>` | `${VAR}` expansion documented for `.mcp.json`; **use a literal value at user scope** (`~/.claude.json` expansion is undocumented) | `MCP_TIMEOUT` (ms) startup; per-server `timeout` in **ms**; 30 min stdio idle timeout |
+| Codex / ChatGPT / Codex IDE | `outlook` | `codex mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="…" -- node <DIST>` — writes **global** `~/.codex/config.toml` only | **No interpolation is documented for TOML `env`.** To avoid storing the value, use `env_vars = ["OUTLOOK_OAUTH_CLIENT_ID"]` | `startup_timeout_sec` default **10**, `tool_timeout_sec` default 60 |
+| VS Code / Copilot | `outlook` | `code --add-mcp "{\"name\":\"outlook\",\"type\":\"stdio\",\"command\":\"node\",\"args\":[\"<DIST>\"]}"` — writes the user profile; no scope flag, no `--` separator | `${input:id}` plus a top-level `inputs` array is the documented mechanism; `${env:NAME}` is **not** documented for `mcp.json` | No documented timeout; Workspace Trust gates workspace servers, and Agent Host **silently skips** `${input:…}` servers |
+
+Hard rules that come out of this:
+
+- **Always emit `"type": "stdio"` for VS Code.** Its reference table marks `type` required while its own examples omit it — emit it to satisfy the stricter reading.
+- **In Claude Code, never put the server name straight after `--env`.** The CLI reads the name as another `KEY=value` pair and rejects it; separate them with `--transport stdio`.
+- **A `--` separator is required** for Pi, Claude Code, and Codex; **not** for `code --add-mcp`, which takes one JSON string.
+- **Do not write `${VAR}` into Codex TOML.** Forward with `env_vars`, or write a literal.
+- **One name for everything: `outlook`.** Pi and Claude Code enforce `[A-Za-z0-9_-]`, Codex additionally permits `: @ / .`, and VS Code recommends camelCase with no enforced charset — so `outlook` is safe everywhere and never needs prefixing in our snippets.
+- **Cold `npx` installs are now known to be risky, not merely slow**: Codex's default `startup_timeout_sec` is 10 s and Claude Code has an `MCP_TIMEOUT` startup budget, which a clone-and-install can exceed. Clone-and-build stays the documented default; the git one-liner must tell users to raise those two values.
+- Tool naming is prefixed to `mcp__<server>__<tool>` by Pi and Claude Code; for Codex and VS Code **no official prefix format is documented**, so never hardcode a prefixed tool name in docs or the skill.
+
+Still unverified (do not present as fact in docs): the absolute VS Code user-profile `mcp.json` path (docs say only "the `mcp.json` file in your user profile folder"), whether `${env:NAME}` expands in `mcp.json`, whether Codex accepts SSE, and any Codex/VS Code tool-call naming. A second research pass is checking Cursor, Gemini CLI, OpenCode, Claude Desktop, and whether the `npx` git/tarball install claims are documented behaviour or convention.
 
 ## 9. Security posture
 
