@@ -2,24 +2,24 @@
 
 Locked decisions (2025 review):
 
-| Decision | Choice |
-| --- | --- |
-| Runtime | **Node-only toolchain** — drop Bun entirely |
-| Distribution | **GitHub-only, no npm** |
+| Decision     | Choice                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| Runtime      | **Node-only toolchain** — drop Bun entirely                                                 |
+| Distribution | **GitHub-only, no npm**                                                                     |
 | Tool surface | Read-only today **+ draft writing** (the user clicks Send; nothing we expose can send mail) |
-| Sign-in | **Background device-code login + `auth_status` polling** |
+| Sign-in      | **Background device-code login + `auth_status` polling**                                    |
 
 ## 1. Where we are
 
 Current repo is a **Bun CLI + root `SKILL.md`**:
 
-| Piece | State |
-| --- | --- |
+| Piece                            | State                                                                                                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scripts/outlook.ts` (223 lines) | Everything in one file: MSAL cache plugin, login/logout, Graph client, `list`/`get`/`search`/`attachments`, limit validator, Commander CLI. Functions are exported, so it is testable. |
-| `SKILL.md` (repo root) | Bun commands + a hand-rolled `nohup` recipe for device-code sign-in. |
-| `test/`, `e2e/` | Good coverage, but `test/outlook.test.ts` depends on Bun-only `mock.module` (2 modules, ~90 lines of fakes). |
-| `package.json` | `private: true`, no `bin`, no build, Bun lockfile. |
-| Bun-specific | `Bun.env` (L44), `Bun.argv` (L159), `import.meta.main` (L219), implicit `.env` loading, `bun.lock`, `bunfig.toml`, `bun:test`. |
+| `SKILL.md` (repo root)           | Bun commands + a hand-rolled `nohup` recipe for device-code sign-in.                                                                                                                   |
+| `test/`, `e2e/`                  | Good coverage, but `test/outlook.test.ts` depends on Bun-only `mock.module` (2 modules, ~90 lines of fakes).                                                                           |
+| `package.json`                   | `private: true`, no `bin`, no build, Bun lockfile.                                                                                                                                     |
+| Bun-specific                     | `Bun.env` (L44), `Bun.argv` (L159), `import.meta.main` (L219), implicit `.env` loading, `bun.lock`, `bunfig.toml`, `bun:test`.                                                         |
 
 Capabilities: list inbox (≤100), mailbox search (≤1000), read one message as text, list attachments with base64 `contentBytes`. Read-only scopes `User.Read`, `Mail.Read`, `email`, `profile`; public client, device-code flow, cache at `~/.outlook-skill/msal-cache.json` (`0700`/`0600`), authority hard-coded to `consumers` (personal accounts only).
 
@@ -57,7 +57,7 @@ outlook-skill/
 Verified on this machine (Node v25.0.0): `node file.ts` and `node --test` run TypeScript directly via native type stripping. Type stripping is enabled by default from **v22.18.0 / v23.6.0** and stable from **v24.12.0 / v25.2.0**.
 
 - **Dev and test run TS sources directly** — `node --test test/*.test.ts e2e/*.test.ts`. No ts-node, no vitest, no loader, no build step while iterating.
-- **Ship compiled JS**: `tsc -p tsconfig.build.json` → `dist/`, so the runtime floor for *users* stays low (`engines.node >= 20`).
+- **Ship compiled JS**: `tsc -p tsconfig.build.json` → `dist/`, so the runtime floor for _users_ stays low (`engines.node >= 20`).
 - **Erasable syntax only** — no `enum`, `namespace`, or constructor parameter properties (they need transformation). Enforce with `"erasableSyntaxOnly": true`.
 - **Explicit import extensions** (`./core/auth.ts`) so Node runs the sources; `"allowImportingTsExtensions": true` plus `"rewriteRelativeImportExtensions": true` (TS ≥5.7; repo already pins 5.9.3) makes `tsc` emit correct `.js` specifiers.
 - **Remove Bun**: delete `bun.lock` + `bunfig.toml`, add `package-lock.json`, replace `Bun.env`/`Bun.argv`/`import.meta.main` (entry check = compare `process.argv[1]` realpath with `fileURLToPath(import.meta.url)`).
@@ -73,27 +73,27 @@ Tool names stay short (`list_emails`) because clients prefix them — Pi exposes
 
 **Read tools** — `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: true`:
 
-| Tool | Inputs | Notes |
-| --- | --- | --- |
-| `list_emails` | `folder?` (default `inbox`), `unread?`, `limit?` 1-100, `cursor?` | Adds folder resolution and paging, both missing today. |
-| `search_emails` | `query`, `limit?`, `cursor?` | Graph syntax (`from:`, `subject:`, `body:`), keeps `ConsistencyLevel: eventual`. |
-| `get_email` | `id` | Full plain-text body via `Prefer: outlook.body-content-type="text"`. |
-| `list_attachments` | `messageId` | **Metadata only** — `id`, `name`, `contentType`, `size`, `isInline`. |
-| `download_attachment` | `messageId`, `attachmentId`, `dir?`, `encoding?` | Writes to an approved directory (default `$TMPDIR/outlook-mcp`), returns the path. Base64 inline only on request, size-capped. |
-| `auth_status` | — | `{ signedIn, account, authority, cachePath, lastLoginError? }` — lets an agent self-diagnose. |
-| `login` / `logout` | — | `login` returns instantly (§5); `logout` is `destructiveHint: true`. |
+| Tool                  | Inputs                                                            | Notes                                                                                                                          |
+| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `list_emails`         | `folder?` (default `inbox`), `unread?`, `limit?` 1-100, `cursor?` | Adds folder resolution and paging, both missing today.                                                                         |
+| `search_emails`       | `query`, `limit?`, `cursor?`                                      | Graph syntax (`from:`, `subject:`, `body:`), keeps `ConsistencyLevel: eventual`.                                               |
+| `get_email`           | `id`                                                              | Full plain-text body via `Prefer: outlook.body-content-type="text"`.                                                           |
+| `list_attachments`    | `messageId`                                                       | **Metadata only** — `id`, `name`, `contentType`, `size`, `isInline`.                                                           |
+| `download_attachment` | `messageId`, `attachmentId`, `dir?`, `encoding?`                  | Writes to an approved directory (default `$TMPDIR/outlook-mcp`), returns the path. Base64 inline only on request, size-capped. |
+| `auth_status`         | —                                                                 | `{ signedIn, account, authority, cachePath, lastLoginError? }` — lets an agent self-diagnose.                                  |
+| `login` / `logout`    | —                                                                 | `login` returns instantly (§5); `logout` is `destructiveHint: true`.                                                           |
 
 **Draft tools** — the user's "just click Send" requirement. Verified against Microsoft Graph: `POST /me/messages` creates a draft, and `POST /me/messages/{id}/createReply` / `/createForward` create threaded draft replies/forwards (a `comment` body sets the text). All are `readOnlyHint: false`, `idempotentHint: false`, `openWorldHint: true`, so clients prompt before running them.
 
-| Tool | Backing call | Notes |
-| --- | --- | --- |
-| `create_draft` | `POST /me/messages` | `to[]`, `cc[]`, `bcc[]`, `subject`, `body`, `bodyFormat: text\|html`, `inReplyTo`, `categories`. Returns `id` + `webLink`. |
-| `create_reply_draft` | `POST /me/messages/{id}/createReply` | Preserves threading; draft, never sent. |
+| Tool                   | Backing call                                              | Notes                                                                                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create_draft`         | `POST /me/messages`                                       | `to[]`, `cc[]`, `bcc[]`, `subject`, `body`, `bodyFormat: text\|html`, `inReplyTo`, `categories`. Returns `id` + `webLink`.                                                                                   |
+| `create_reply_draft`   | `POST /me/messages/{id}/createReply`                      | Preserves threading; draft, never sent.                                                                                                                                                                      |
 | `create_forward_draft` | `POST /me/messages/{id}/createForward` + explicit `to[]`. |
-| `update_draft` | `PATCH /me/messages/{id}` | Let the agent revise after user feedback instead of creating duplicates. |
-| `list_drafts` | `GET /me/mailFolders/drafts/messages` | So the agent can find what it already made. |
-| `delete_draft` | `DELETE /me/messages/{id}` | `destructiveHint: true`. |
-| `add_attachment` | `POST /me/messages/{id}/attachments` | **Hard 3 MB cap** (verified: single-POST attachments must be under 3 MB; 3–150 MB needs `createUploadSession`, which is backlog). Over-limit input returns a clear actionable error, not a truncated upload. |
+| `update_draft`         | `PATCH /me/messages/{id}`                                 | Let the agent revise after user feedback instead of creating duplicates.                                                                                                                                     |
+| `list_drafts`          | `GET /me/mailFolders/drafts/messages`                     | So the agent can find what it already made.                                                                                                                                                                  |
+| `delete_draft`         | `DELETE /me/messages/{id}`                                | `destructiveHint: true`.                                                                                                                                                                                     |
+| `add_attachment`       | `POST /me/messages/{id}/attachments`                      | **Hard 3 MB cap** (verified: single-POST attachments must be under 3 MB; 3–150 MB needs `createUploadSession`, which is backlog). Over-limit input returns a clear actionable error, not a truncated upload. |
 
 **Things we deliberately do not implement: `/send`, `/reply`, `/forward`.** Nothing in the tool registry or `graph.ts` can transmit mail — that is the whole point of the design and is enforced by a test that asserts (a) the registry contains no send-capable tool and (b) no request path ends in `/send`, `/reply`, or `/forward`. Document this invariant in the README and SECURITY.md; it is the strongest thing we can say to a cautious user.
 
@@ -122,15 +122,15 @@ Reuses the already-tested MSAL path. Alternative if orphan processes ever prove 
 
 ## 6. Configuration
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OUTLOOK_OAUTH_CLIENT_ID` | — (required) | Unchanged. |
-| `OUTLOOK_OAUTH_TENANT` | `consumers` | `common` / `organizations` for work or school mailboxes — today the authority is hard-coded to personal accounts. |
-| `OUTLOOK_SKILL_HOME` | `~/.outlook-skill` | Token cache directory (tests keep using temp `HOME`). |
-| `OUTLOOK_MCP_STATE_DIR` | `~/.outlook-skill/state` | Device-login state. |
-| `OUTLOOK_MCP_ATTACHMENT_DIR` | `$TMPDIR/outlook-mcp` | Where `download_attachment` may write. |
-| `OUTLOOK_MCP_READONLY` | unset | Hide all draft tools; drops the scope to `Mail.Read`. |
-| `OUTLOOK_MCP_LOG_LEVEL` | `info` | stderr only. |
+| Variable                     | Default                  | Purpose                                                                                                           |
+| ---------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `OUTLOOK_OAUTH_CLIENT_ID`    | — (required)             | Unchanged.                                                                                                        |
+| `OUTLOOK_OAUTH_TENANT`       | `consumers`              | `common` / `organizations` for work or school mailboxes — today the authority is hard-coded to personal accounts. |
+| `OUTLOOK_SKILL_HOME`         | `~/.outlook-skill`       | Token cache directory (tests keep using temp `HOME`).                                                             |
+| `OUTLOOK_MCP_STATE_DIR`      | `~/.outlook-skill/state` | Device-login state.                                                                                               |
+| `OUTLOOK_MCP_ATTACHMENT_DIR` | `$TMPDIR/outlook-mcp`    | Where `download_attachment` may write.                                                                            |
+| `OUTLOOK_MCP_READONLY`       | unset                    | Hide all draft tools; drops the scope to `Mail.Read`.                                                             |
+| `OUTLOOK_MCP_LOG_LEVEL`      | `info`                   | stderr only.                                                                                                      |
 
 Never a client secret: this stays a public client on the device-code flow.
 
@@ -153,7 +153,7 @@ Observed here on npm 11.19.0: `npx -y github:vincentkelleher/outlook-skill` clon
 - `prepare` does run for git dependencies and is the documented place to compile TypeScript — our design was right — but **npm v12 flips `allowScripts` off and `--allow-git` / `--allow-remote` to `none` by default**, explicitly blocking `prepare` from git, file, and link dependencies. Warnings already appear from npm 11.16.0, which is below the 11.19.0 used here.
 - With no `.npmignore`, **`.gitignore` is used instead**, so a gitignored `dist/` is a documented exclusion risk; `files` must list `dist` explicitly.
 - `engines` is **advisory** unless the user sets `engine-strict`, so it is not a runtime guard, only a warning.
-- `npm install <tarball url>` *is* documented, with testable requirements: `.tar`/`.tar.gz`/`.tgz`, one wrapping directory, and a `package.json` with `name` and `version`. Crucially **`prepare` does not run for tarball-URL installs**, so the release asset must be an `npm pack` artefact and never GitHub's auto-generated source archive — attaching the wrong file is the most likely failure mode.
+- `npm install <tarball url>` _is_ documented, with testable requirements: `.tar`/`.tar.gz`/`.tgz`, one wrapping directory, and a `package.json` with `name` and `version`. Crucially **`prepare` does not run for tarball-URL installs**, so the release asset must be an `npm pack` artefact and never GitHub's auto-generated source archive — attaching the wrong file is the most likely failure mode.
 - Whether `npx` re-clones a git specifier per invocation is **UNVERIFIED**; npm's caching note covers package names only.
 
 Paths, in order of how defensible they are:
@@ -166,12 +166,12 @@ Paths, in order of how defensible they are:
 
 Four clients were verified against official documentation. `<DIST>` means the absolute path to `dist/index.js`.
 
-| Client | Server name | Add command | Env strategy | Units that bite |
-| --- | --- | --- | --- | --- |
-| Pi | `outlook` | `pi mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="$OUTLOOK_OAUTH_CLIENT_ID" --exposure direct --description "Read, search, and draft Outlook mail" -- node <DIST>` then `pi mcp list` to verify | `"${OUTLOOK_OAUTH_CLIENT_ID}"` in `env` is documented | `timeout` is **seconds** (default 60); first prompt waits 10 s for `direct` tools only |
-| Claude Code | `outlook` | `claude mcp add outlook --scope user --env OUTLOOK_OAUTH_CLIENT_ID="…" --transport stdio -- node <DIST>` | `${VAR}` expansion documented for `.mcp.json`; **use a literal value at user scope** (`~/.claude.json` expansion is undocumented) | `MCP_TIMEOUT` (ms) startup; per-server `timeout` in **ms**; 30 min stdio idle timeout |
-| Codex / ChatGPT / Codex IDE | `outlook` | `codex mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="…" -- node <DIST>` — writes **global** `~/.codex/config.toml` only | **No interpolation is documented for TOML `env`.** To avoid storing the value, use `env_vars = ["OUTLOOK_OAUTH_CLIENT_ID"]` | `startup_timeout_sec` default **10**, `tool_timeout_sec` default 60 |
-| VS Code / Copilot | `outlook` | `code --add-mcp "{\"name\":\"outlook\",\"type\":\"stdio\",\"command\":\"node\",\"args\":[\"<DIST>\"]}"` — writes the user profile; no scope flag, no `--` separator | `${input:id}` plus a top-level `inputs` array is the documented mechanism; `${env:NAME}` is **not** documented for `mcp.json` | No documented timeout; Workspace Trust gates workspace servers, and Agent Host **silently skips** `${input:…}` servers |
+| Client                      | Server name | Add command                                                                                                                                                                                      | Env strategy                                                                                                                      | Units that bite                                                                                                        |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Pi                          | `outlook`   | `pi mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="$OUTLOOK_OAUTH_CLIENT_ID" --exposure direct --description "Read, search, and draft Outlook mail" -- node <DIST>` then `pi mcp list` to verify | `"${OUTLOOK_OAUTH_CLIENT_ID}"` in `env` is documented                                                                             | `timeout` is **seconds** (default 60); first prompt waits 10 s for `direct` tools only                                 |
+| Claude Code                 | `outlook`   | `claude mcp add outlook --scope user --env OUTLOOK_OAUTH_CLIENT_ID="…" --transport stdio -- node <DIST>`                                                                                         | `${VAR}` expansion documented for `.mcp.json`; **use a literal value at user scope** (`~/.claude.json` expansion is undocumented) | `MCP_TIMEOUT` (ms) startup; per-server `timeout` in **ms**; 30 min stdio idle timeout                                  |
+| Codex / ChatGPT / Codex IDE | `outlook`   | `codex mcp add outlook --env OUTLOOK_OAUTH_CLIENT_ID="…" -- node <DIST>` — writes **global** `~/.codex/config.toml` only                                                                         | **No interpolation is documented for TOML `env`.** To avoid storing the value, use `env_vars = ["OUTLOOK_OAUTH_CLIENT_ID"]`       | `startup_timeout_sec` default **10**, `tool_timeout_sec` default 60                                                    |
+| VS Code / Copilot           | `outlook`   | `code --add-mcp "{\"name\":\"outlook\",\"type\":\"stdio\",\"command\":\"node\",\"args\":[\"<DIST>\"]}"` — writes the user profile; no scope flag, no `--` separator                              | `${input:id}` plus a top-level `inputs` array is the documented mechanism; `${env:NAME}` is **not** documented for `mcp.json`     | No documented timeout; Workspace Trust gates workspace servers, and Agent Host **silently skips** `${input:…}` servers |
 
 Hard rules that come out of this:
 
@@ -215,20 +215,20 @@ Total ≈ 5 working days.
 
 ## 11. Risks
 
-| Risk | Mitigation |
-| --- | ---|
-| Retiring `mock.module` balloons into a rewrite | Budgeted as its own Phase 1 deliverable; DI shape designed before touching tests. |
-| Node type stripping rejects a construct (`enum`, `namespace`, parameter properties) | `erasableSyntaxOnly: true` in tsconfig + CI on Node 20/22/24. |
-| Blocking login exceeds client MCP timeouts | Detached sign-in process, instant return, `auth_status` polling (§5). |
-| stdout contamination corrupts JSON-RPC | stdout→stderr redirect in serve mode + byte-level e2e test. |
-| Concurrent clients corrupt the shared token cache | Atomic temp+rename write, re-read-and-retry on refresh failure. |
-| Read + draft lets hostile mail steer draft content | Human must click Send before anything leaves the mailbox, client confirmation annotations, SKILL.md rules, draft readback in every result (§9). |
-| Scope bump to `Mail.ReadWrite` surprises existing users | Documented in README + CHANGELOG, one-time re-consent, `--readonly` escape hatch. |
-| Base64 attachments exhaust context | Metadata-only by default, explicit capped download. |
-| 3 MB Graph attachment limit hit silently | Hard input validation with an actionable error; upload sessions in backlog. |
-| `webLink` is unreliable for personal outlook.com accounts (reported on Microsoft Q&A) | Return it opportunistically; SKILL.md tells the human to open Drafts instead. |
-| GitHub-only means no registry semver/resolution | Tag releases, pin `#v1.0.0` in configs, ship release tarballs. |
-| Cold `npx github:` install exceeds MCP startup patience | Recommend clone+build as the default path; release tarball as the fast option. |
-| Pi defaults MCP tools to `codemode` (not declared to the model) | Document `"exposure": "direct"` for a server this small. |
-| Existing skill users break when root `SKILL.md` moves | Keep `name: outlook-skill`, shim `scripts/outlook.ts` for one release, migration note. |
-| Graph quirks (`$search` needs `ConsistencyLevel`, `$top` ≤ 1000, `$search` + `$filter` conflicts) | Encode limits in schemas, document, unit-test request shapes as the suite does today. |
+| Risk                                                                                              | Mitigation                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Retiring `mock.module` balloons into a rewrite                                                    | Budgeted as its own Phase 1 deliverable; DI shape designed before touching tests.                                                               |
+| Node type stripping rejects a construct (`enum`, `namespace`, parameter properties)               | `erasableSyntaxOnly: true` in tsconfig + CI on Node 20/22/24.                                                                                   |
+| Blocking login exceeds client MCP timeouts                                                        | Detached sign-in process, instant return, `auth_status` polling (§5).                                                                           |
+| stdout contamination corrupts JSON-RPC                                                            | stdout→stderr redirect in serve mode + byte-level e2e test.                                                                                     |
+| Concurrent clients corrupt the shared token cache                                                 | Atomic temp+rename write, re-read-and-retry on refresh failure.                                                                                 |
+| Read + draft lets hostile mail steer draft content                                                | Human must click Send before anything leaves the mailbox, client confirmation annotations, SKILL.md rules, draft readback in every result (§9). |
+| Scope bump to `Mail.ReadWrite` surprises existing users                                           | Documented in README + CHANGELOG, one-time re-consent, `--readonly` escape hatch.                                                               |
+| Base64 attachments exhaust context                                                                | Metadata-only by default, explicit capped download.                                                                                             |
+| 3 MB Graph attachment limit hit silently                                                          | Hard input validation with an actionable error; upload sessions in backlog.                                                                     |
+| `webLink` is unreliable for personal outlook.com accounts (reported on Microsoft Q&A)             | Return it opportunistically; SKILL.md tells the human to open Drafts instead.                                                                   |
+| GitHub-only means no registry semver/resolution                                                   | Tag releases, pin `#v1.0.0` in configs, ship release tarballs.                                                                                  |
+| Cold `npx github:` install exceeds MCP startup patience                                           | Recommend clone+build as the default path; release tarball as the fast option.                                                                  |
+| Pi defaults MCP tools to `codemode` (not declared to the model)                                   | Document `"exposure": "direct"` for a server this small.                                                                                        |
+| Existing skill users break when root `SKILL.md` moves                                             | Keep `name: outlook-skill`, shim `scripts/outlook.ts` for one release, migration note.                                                          |
+| Graph quirks (`$search` needs `ConsistencyLevel`, `$top` ≤ 1000, `$search` + `$filter` conflicts) | Encode limits in schemas, document, unit-test request shapes as the suite does today.                                                           |

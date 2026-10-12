@@ -1,13 +1,17 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "module": "Preserve",
-    "moduleResolution": "Bundler",
-    "types": ["bun"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
     "strict": true,
-    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "allowImportingTsExtensions": true,
-    "skipLibCheck": true
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "skipLibCheck": true,
+    "noEmit": true
   },
-  "include": ["scripts/**/*.ts", "test/**/*.ts", "e2e/**/*.ts"]
+  "include": ["src", "test", "e2e"]
 }
