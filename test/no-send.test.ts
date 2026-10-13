@@ -10,31 +10,16 @@ import { loadConfig, scopesFor } from "../src/core/config.ts";
 import type { Config, Env } from "../src/core/config.ts";
 import { createGraph } from "../src/core/graph.ts";
 import { createServer } from "../src/mcp.ts";
-import { tools, toolsFor } from "../src/tools.ts";
+import {
+  draftToolNames,
+  readToolNames,
+  tools,
+  toolsFor,
+} from "../src/tools.ts";
 import type { ToolDeps } from "../src/tools.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const clientId = "00000000-0000-0000-0000-000000000000";
-
-const readToolNames = [
-  "auth_status",
-  "download_attachment",
-  "get_email",
-  "list_attachments",
-  "list_emails",
-  "login",
-  "logout",
-  "search_emails",
-];
-const draftToolNames = [
-  "add_attachment",
-  "create_draft",
-  "create_forward_draft",
-  "create_reply_draft",
-  "delete_draft",
-  "list_drafts",
-  "update_draft",
-];
 
 /**
  * A tool name is send-capable when it offers to transmit mail: send, reply or
@@ -116,6 +101,7 @@ async function advertised(
 }
 
 test("the registry is the read tools plus seven draft tools, nothing else", () => {
+  assert.equal(draftToolNames.length, 7);
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
     [...readToolNames, ...draftToolNames].sort(),
@@ -200,9 +186,9 @@ test("readonly mode advertises no draft tool at all", async (t) => {
   const config = testConfig(t, { OUTLOOK_MCP_READONLY: "1" });
   const { client, names } = await advertised(t, config);
 
+  // Pinned against the read half of the registry: a draft tool left in this mode
+  // cannot match it, so there is nothing to re-check name by name.
   assert.deepEqual(names, [...readToolNames].sort());
-  for (const name of draftToolNames)
-    assert.equal(names.includes(name), false, `${name} is advertised`);
 
   // What is left is read-only mail plus sign-in, which touches the local cache
   // and not the mailbox; without it a read-only server could not sign in.
@@ -252,6 +238,32 @@ test("the advertised tools and the advertised permissions are one decision", asy
       !readonly,
       `draft tools with readonly=${readonly}`,
     );
+  }
+});
+
+test("the instructions name every tool the server has, in both modes", async (t) => {
+  // An agent reads the instructions instead of the registry, so prose that falls
+  // behind it is a claim the server cannot keep: in read-only mode the draft
+  // tools are named as the ones that are missing, in the other mode as the ones
+  // that write.
+  for (const readonly of [true, false]) {
+    const config = testConfig(t, readonly ? { OUTLOOK_MCP_READONLY: "1" } : {});
+    const { client } = await advertised(t, config);
+    const instructions = client.getInstructions() ?? "";
+    for (const name of tools.map((tool) => tool.name))
+      assert.match(
+        instructions,
+        new RegExp(`\\b${name}\\b`),
+        `${name} missing from the instructions (readonly=${readonly})`,
+      );
+    // And it promises nothing the registry does not hold, least of all a way to
+    // send: `draftToolNames` is the whole write surface.
+    for (const promised of ["send_message", "send_draft", "reply_all"])
+      assert.equal(
+        instructions.includes(promised),
+        false,
+        `the instructions name ${promised}, which is not registered`,
+      );
   }
 });
 

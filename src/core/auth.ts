@@ -2,16 +2,18 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PublicClientApplication } from "@azure/msal-node";
 import type { ICachePlugin } from "@azure/msal-node";
-import { loadConfig, scopesFor } from "./config.ts";
+import { loadConfig, loginStatePath, scopesFor } from "./config.ts";
 import type { Config } from "./config.ts";
 import {
   AuthRequiredError,
@@ -58,9 +60,55 @@ export type AuthStatus = {
   cachePath: string;
 };
 
+// The name a cache write goes through on its way to `msal-cache.json`, and the
+// two ends a sweep recognises it by. Neither the real cache nor anything else in
+// the directory matches both.
+const tempCachePrefix = ".msal-cache.";
+const tempCacheSuffix = ".tmp";
+
+/**
+ * A process killed between writing the temp cache and renaming it leaves a
+ * plaintext copy of the token cache beside the real one. Every read sweeps such
+ * copies once they pass this age, because nothing can still be writing to one -
+ * anything newer belongs to another client. Best effort: a sweep that cannot read
+ * the directory, or cannot delete a file, is not worth failing a token refresh
+ * over.
+ */
+const staleTempCacheAgeMs = 60 * 60 * 1000;
+
+function tempCachePath(dir: string): string {
+  return join(
+    dir,
+    `${tempCachePrefix}${process.pid}.${randomUUID()}${tempCacheSuffix}`,
+  );
+}
+
+function sweepStaleTempCaches(dir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(tempCachePrefix) || !name.endsWith(tempCacheSuffix))
+      continue;
+    const path = join(dir, name);
+    try {
+      if (Date.now() - statSync(path).mtimeMs < staleTempCacheAgeMs) continue;
+      rmSync(path, { force: true });
+    } catch {
+      // Another client claimed it in the meantime, or the directory moved.
+    }
+  }
+}
+
 export function createCachePlugin(cachePath: string): ICachePlugin {
   return {
     beforeCacheAccess: async (context) => {
+      // Before reading, so a copy left by a killed write is the first thing the
+      // next session cleans up rather than something it never notices.
+      sweepStaleTempCaches(dirname(cachePath));
       if (existsSync(cachePath))
         context.tokenCache.deserialize(readFileSync(cachePath, "utf8"));
     },
@@ -71,7 +119,7 @@ export function createCachePlugin(cachePath: string): ICachePlugin {
       chmodSync(dir, 0o700);
       // Several MCP clients share this file: write a temp file, then rename, so
       // a reader never sees a half-written cache.
-      const temp = join(dir, `.msal-cache.${process.pid}.${randomUUID()}.tmp`);
+      const temp = tempCachePath(dir);
       try {
         writeFileSync(temp, context.tokenCache.serialize(), { mode: 0o600 });
         chmodSync(temp, 0o600);
@@ -197,9 +245,15 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
     }
   }
 
-  return { accessToken, authStatus, config };
+  return { accessToken, authStatus };
 }
 
-export function logout(cachePath = loadConfig().cachePath) {
-  rmSync(cachePath, { force: true });
+/**
+ * Sign out. The sign-in state goes with the cache: an error left behind by the
+ * last attempt would otherwise read as a fresh failure to whoever signs in next
+ * with a different account, or to the same one after a fix.
+ */
+export function logout(config: Config = loadConfig()): void {
+  rmSync(config.cachePath, { force: true });
+  rmSync(loginStatePath(config), { force: true });
 }

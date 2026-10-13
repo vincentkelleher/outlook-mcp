@@ -9,9 +9,11 @@ import type { Env } from "./config.ts";
  * format, so the printed snippet and the written file cannot drift.
  * `docs/clients.md` is the prose version of this table.
  *
- * Shapes marked `verified` come from the client's own documentation as recorded
- * in docs/plan-mcp-skill.md §8. The others are conventional but unverified
- * here, and `config` says so out loud rather than presenting them as fact.
+ * Provenance is stated directly, per entry: a shape is presented as fact only
+ * when it was read in that client's own official documentation, what was not
+ * read there travels in `unverified`, and `config` says the difference out loud
+ * rather than presenting convention as fact. No design record stands behind any
+ * of it - what the client documents today is the only authority here.
  */
 
 /** One server name everywhere: Pi and Claude Code enforce this character set. */
@@ -77,8 +79,9 @@ type Definition = {
   destination: string;
   notes: string[];
   /**
-   * What was not checked against this client's own documentation, and so must
-   * be said out loud. Absent only where plan §8 records a verification.
+   * What was not checked against this client's own official documentation, and
+   * so must be said out loud. Absence is the record of a verification: the shape
+   * was read there, and re-reading it is what changes this entry.
    */
   unverified?: string;
   /** Absolute user configuration file, when the client has one we can name. */
@@ -108,28 +111,28 @@ function stdioEntry(
   };
 }
 
-/** Windows keeps application data elsewhere, and the desktop clients follow it. */
-function claudeDesktopPath(target: Resolved): string {
-  const file = "claude_desktop_config.json";
-  if (target.platform === "win32") return join(target.appData, "Claude", file);
-  if (target.platform === "darwin")
-    return join(target.home, "Library", "Application Support", "Claude", file);
-  return join(target.home, ".config", "Claude", file);
-}
-
-function vsCodePath(target: Resolved): string {
-  if (target.platform === "win32")
-    return join(target.appData, "Code", "User", "mcp.json");
-  if (target.platform === "darwin")
-    return join(
-      target.home,
-      "Library",
-      "Application Support",
-      "Code",
-      "User",
-      "mcp.json",
-    );
-  return join(target.home, ".config", "Code", "User", "mcp.json");
+/**
+ * Where a desktop client keeps its user configuration: under the roaming app
+ * data on Windows, under `Library/Application Support` on the Mac, under
+ * `.config` everywhere else. The client contributes only the names below it, so
+ * one platform rule is written once.
+ */
+function appConfigPath(
+  directory: string,
+  ...tail: string[]
+): (target: Resolved) => string {
+  return (target) =>
+    target.platform === "win32"
+      ? join(target.appData, directory, ...tail)
+      : target.platform === "darwin"
+        ? join(
+            target.home,
+            "Library",
+            "Application Support",
+            directory,
+            ...tail,
+          )
+        : join(target.home, ".config", directory, ...tail);
 }
 
 /** Paths arrive with backslashes on Windows: TOML basic strings must keep them. */
@@ -185,7 +188,7 @@ const definitions: Record<ClientId, Definition> = {
     ],
     unverified:
       "Unverified: this Claude Desktop file location was not checked against its official documentation.",
-    path: claudeDesktopPath,
+    path: appConfigPath("Claude", "claude_desktop_config.json"),
     file: { kind: "json", rootKey: "mcpServers" },
     entry: (target) => stdioEntry(target, false),
   },
@@ -207,7 +210,7 @@ const definitions: Record<ClientId, Definition> = {
     ],
     unverified:
       "Unverified: the exact path of the user-profile mcp.json is not published, so check it in VS Code with the MCP: Open User Config command.",
-    path: vsCodePath,
+    path: appConfigPath("Code", "User", "mcp.json"),
     file: { kind: "json", rootKey: "servers" },
     entry: (target) => ({ type: "stdio", ...stdioEntry(target, false) }),
   },

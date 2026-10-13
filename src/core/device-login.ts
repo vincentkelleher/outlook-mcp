@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import { createAuth } from "./auth.ts";
+import { loginStatePath } from "./config.ts";
 import type { Config } from "./config.ts";
 
 export type LoginState = {
@@ -19,7 +26,16 @@ export type LoginLaunch = LoginState & {
   account?: string;
 };
 
-type Child = { unref(): void; pid?: number };
+/**
+ * What this module needs of the sign-in process: it must be detachable, and it
+ * must be able to report that it never started, because a spawn that fails emits
+ * `error` rather than throwing.
+ */
+type Child = {
+  unref(): void;
+  pid?: number;
+  on(event: "error", listener: (error: unknown) => unknown): unknown;
+};
 type SpawnChild = (
   command: string,
   args: string[],
@@ -37,14 +53,15 @@ const statePollMs = 100;
  */
 const launchLeaseMs = 30_000;
 
-function statePath(config: Config) {
-  return join(config.stateDir, "login.json");
-}
-
 export function writeLoginState(config: Config, state: LoginState): void {
-  const path = statePath(config);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(state));
+  const path = loginStatePath(config);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // mkdir's mode is filtered by the umask and ignored when the directory is
+  // already there, so state it again: a user code is redeemable by whoever reads
+  // it, and a shared state directory must not make it world-readable.
+  chmodSync(dir, 0o700);
+  writeFileSync(path, JSON.stringify(state), { mode: 0o600 });
 }
 
 /**
@@ -63,7 +80,9 @@ function expired(state: LoginState): boolean {
 export function readLoginState(config: Config): LoginState | undefined {
   let state: LoginState;
   try {
-    state = JSON.parse(readFileSync(statePath(config), "utf8")) as LoginState;
+    state = JSON.parse(
+      readFileSync(loginStatePath(config), "utf8"),
+    ) as LoginState;
   } catch {
     return undefined;
   }
@@ -102,7 +121,7 @@ function launchLease(pid: number): LoginState {
 }
 
 function clearLoginState(config: Config): void {
-  rmSync(statePath(config), { force: true });
+  rmSync(loginStatePath(config), { force: true });
 }
 
 /**
@@ -130,6 +149,16 @@ export function startLogin(
   // The lease names the child, not us: this process may be gone by the time a
   // second client asks, and the flow outlives it.
   writeLoginState(config, launchLease(child.pid ?? process.pid));
+  // A child that cannot be started writes nothing at all, so without this the
+  // caller waits out the whole poll and reports a slow sign-in instead of the
+  // reason. An `error` event also has to be handled or it throws out of the
+  // server process.
+  child.on("error", (error) =>
+    writeLoginState(config, {
+      state: "error",
+      message: error instanceof Error ? error.message : String(error),
+    }),
+  );
   child.unref();
 }
 

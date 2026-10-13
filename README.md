@@ -156,7 +156,6 @@ that is what the CLI always did; the MCP tools never do.
 | `OUTLOOK_MCP_STATE_DIR`      | `~/.outlook-skill/state` | Sign-in state: the URL, the code, the last error. Never a token.                                 |
 | `OUTLOOK_MCP_ATTACHMENT_DIR` | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                           |
 | `OUTLOOK_MCP_READONLY`       | unset                    | Read-only: hides all draft tools and asks Microsoft for `Mail.Read` instead of `Mail.ReadWrite`. |
-| `OUTLOOK_MCP_LOG_LEVEL`      | `info`                   | stderr only.                                                                                     |
 
 A `.env` in the working directory is read for you, and real environment
 variables win over it.

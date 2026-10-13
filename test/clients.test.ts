@@ -3,11 +3,13 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   assertClientId,
@@ -18,6 +20,7 @@ import {
 } from "../src/core/clients.ts";
 import type { ClientId } from "../src/core/clients.ts";
 
+const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const entry = "/opt/outlook-mcp/dist/index.js";
 const clientId = "00000000-0000-0000-0000-000000000000";
 const home = () => mkdtempSync(join(tmpdir(), "outlook-clients-"));
@@ -98,6 +101,40 @@ test("VS Code gets a top-level servers map with the required type", () => {
   assert.equal(file.servers.outlook.type, "stdio");
 });
 
+test("a desktop client's file is found on every platform", () => {
+  // The one platform rule the desktop entries share, checked at each root rather
+  // than per client: Windows keeps app data elsewhere, the Mac under Library.
+  const env = { HOME: "/home/someone", APPDATA: "/AppData/Roaming" };
+  const pathOn = (client: ClientId, platform: NodeJS.Platform) =>
+    renderClient(client, { entry, clientId, env, platform }).path;
+  const support = join("Library", "Application Support");
+
+  assert.equal(
+    pathOn("claude-desktop", "win32"),
+    join("/AppData/Roaming", "Claude", "claude_desktop_config.json"),
+  );
+  assert.equal(
+    pathOn("claude-desktop", "darwin"),
+    join("/home/someone", support, "Claude", "claude_desktop_config.json"),
+  );
+  assert.equal(
+    pathOn("claude-desktop", "linux"),
+    join("/home/someone", ".config", "Claude", "claude_desktop_config.json"),
+  );
+  assert.equal(
+    pathOn("vscode", "win32"),
+    join("/AppData/Roaming", "Code", "User", "mcp.json"),
+  );
+  assert.equal(
+    pathOn("vscode", "darwin"),
+    join("/home/someone", support, "Code", "User", "mcp.json"),
+  );
+  assert.equal(
+    pathOn("vscode", "linux"),
+    join("/home/someone", ".config", "Code", "User", "mcp.json"),
+  );
+});
+
 test("OpenCode carries a local command as a list", () => {
   const server = parsed("opencode").mcp.outlook;
   assert.equal(server.type, "local");
@@ -128,11 +165,59 @@ test("a shape nobody checked against official documentation says so", () => {
     "opencode",
   ] as const)
     assert.match(noteText(client), /^Unverified:/m, client);
-  // Plan §8 checked these shapes against the client's own documentation.
+  // These shapes were read in the client's own official documentation, which is
+  // why the entry carries no `unverified` note.
   for (const client of ["pi", "claude-code", "codex"] as const)
     assert.equal(noteText(client).includes("Unverified"), false, client);
   // VS Code's shape is documented, the absolute path of its user file is not.
   assert.match(noteText("vscode"), /^Unverified: the exact path/m);
+});
+
+/** Every TypeScript and Markdown file under `dir`. */
+function textFiles(dir: string, found: string[] = []): string[] {
+  for (const item of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, item.name);
+    if (item.isDirectory()) textFiles(path, found);
+    else if (/\.(?:ts|md)$/.test(item.name)) found.push(path);
+  }
+  return found;
+}
+
+test("the migration plan is history: not shipped, and cited by nothing", () => {
+  // The plan records the design as it was decided, and it disagrees with the
+  // code in places. Shipping it and pointing a reader at it for what is verified
+  // would hand that drift to whoever trusted the citation, so provenance is
+  // stated where it is decided instead: per entry in `src/core/clients.ts`.
+  const manifest = JSON.parse(
+    readFileSync(join(repo, "package.json"), "utf8"),
+  ) as { files?: string[] };
+  assert.deepEqual(manifest.files, [
+    "dist",
+    "skills",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE",
+  ]);
+
+  // `test/` is out of the scan because this very test has to name the file.
+  const readable = [
+    ...textFiles(join(repo, "src")),
+    ...textFiles(join(repo, "docs")).filter(
+      (file) => !file.endsWith("plan-mcp-skill.md"),
+    ),
+    ...textFiles(join(repo, "skills")),
+    join(repo, "README.md"),
+    join(repo, "SECURITY.md"),
+    join(repo, "CHANGELOG.md"),
+  ];
+  assert.equal(readable.length >= 15, true, "the shipped surface is read");
+  assert.deepEqual(
+    readable.filter((file) =>
+      readFileSync(file, "utf8").includes("plan-mcp-skill.md"),
+    ),
+    [],
+  );
 });
 
 test("the built entry wins, and its absence says the sources need a newer Node", () => {

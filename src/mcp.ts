@@ -9,23 +9,30 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { scopesFor } from "./core/config.ts";
 import { AuthRequiredError } from "./core/errors.ts";
-import { toolsFor } from "./tools.ts";
+import { defaultPageSize, maxPageSize } from "./core/graph.ts";
+import { draftToolNames, readToolNames, toolsFor } from "./tools.ts";
 import type { ToolDeps } from "./tools.ts";
 
 const serverName = "outlook";
-const defaultLimit = 10;
-const maxLimit = 100;
 
-const draftToolNames =
-  "create_draft, create_reply_draft, create_forward_draft, update_draft, list_drafts, delete_draft and add_attachment";
+/**
+ * Tool names as English prose. The instructions are what an agent believes about
+ * this server, so they name the registry's own tools rather than a copy of them
+ * made by hand.
+ */
+function proseOf(names: readonly string[]): string {
+  return names.length < 2
+    ? names.join("")
+    : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
 
 /** What the server claims about itself, matched to what it actually exposes. */
 function instructionsFor(readonly: boolean): string {
   return [
-    "Outlook mail over Microsoft Graph: read with list_emails, search_emails, get_email, list_attachments and download_attachment, and check or start a session with auth_status, login and logout.",
+    `Outlook mail over Microsoft Graph: read and search mail, download attachments, and check or start a session with ${proseOf(readToolNames)}.`,
     readonly
-      ? `This server runs in readonly mode: it asks Microsoft for the Mail.Read scope only and exposes none of ${draftToolNames}.`
-      : `The draft tools - ${draftToolNames} - write a message that has not been sent, and every result reads back what was stored so a person can audit it.`,
+      ? `This server runs in readonly mode: it asks Microsoft for the Mail.Read scope only and exposes none of ${proseOf(draftToolNames)}.`
+      : `The draft tools - ${proseOf(draftToolNames)} - write a message that has not been sent, and every result reads back what was stored so a person can audit it.`,
     "Nothing on this server can send, reply or forward mail, and no tool infers a recipient; the user is the one who sends.",
     "Results are compact JSON, one text block, with the same payload in structuredContent. List results carry nextCursor - pass it back as cursor for the next page. Full bodies only come from get_email.",
     "When a call says a session is missing, expired or needs re-authorisation, or auth_status reports signedIn false, call login: reason needsConsent means the cached grant is narrower than the scopes auth_status lists, and only a fresh consent flow widens it. Show the user the verification URL and code login returns, poll auth_status until signedIn is true, then retry.",
@@ -96,13 +103,13 @@ async function guard<T>(run: () => Promise<T>): Promise<T> {
 function inboxPage(uri: URL) {
   const params = uri.searchParams;
   const limit = params.get("limit");
-  let top = defaultLimit;
+  let top = defaultPageSize;
   if (limit !== null) {
     const parsed = Number(limit);
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxLimit)
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxPageSize)
       throw new McpError(
         ErrorCode.InvalidParams,
-        `limit must be an integer from 1 to ${maxLimit}.`,
+        `limit must be an integer from 1 to ${maxPageSize}.`,
       );
     top = parsed;
   }
@@ -173,7 +180,7 @@ export function createServer(deps: ToolDeps): McpServer {
     textContent(
       uri,
       await guard(() =>
-        deps.graph.listMessages({ folder: "inbox", top: defaultLimit }),
+        deps.graph.listMessages({ folder: "inbox", top: defaultPageSize }),
       ),
     ),
   );

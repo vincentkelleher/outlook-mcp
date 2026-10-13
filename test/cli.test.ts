@@ -3,6 +3,11 @@ import { test } from "node:test";
 import { main } from "../src/cli.ts";
 import type { CliDeps } from "../src/cli.ts";
 import type { Graph } from "../src/core/graph.ts";
+import {
+  defaultPageSize,
+  maxPageSize,
+  maxSearchPageSize,
+} from "../src/core/graph.ts";
 
 type Calls = {
   list: unknown[];
@@ -100,7 +105,8 @@ test("list sends the unread flag and limit, and prints indented JSON", async () 
   });
   assert.deepEqual(unread.stdout, JSON.stringify([{ id: "listed" }], null, 2));
   assert.deepEqual(calls.list, [
-    { unread: undefined, top: 10 },
+    // No --limit, so the CLI's default is the page size Graph defaults to too.
+    { unread: undefined, top: defaultPageSize },
     { unread: true, top: 3 },
   ]);
 });
@@ -109,7 +115,7 @@ test("search sends the query and its own larger maximum", async () => {
   const { graph, calls } = fakeGraph();
 
   const result = await runCli(
-    ["emails", "search", "invoice", "--limit", "1000"],
+    ["emails", "search", "invoice", "--limit", `${maxSearchPageSize}`],
     {
       graph,
     },
@@ -156,12 +162,21 @@ test("login --background reports an existing session instead of starting a secon
 test("limits are validated against each command maximum", async () => {
   const { graph, calls } = fakeGraph();
   const cases: Array<{ args: string[]; maximum: number }> = [
-    { args: ["emails", "list", "--limit", "0"], maximum: 100 },
-    { args: ["emails", "list", "--limit", "101"], maximum: 100 },
-    { args: ["emails", "list", "--limit", "1.5"], maximum: 100 },
-    { args: ["emails", "list", "--limit", "nope"], maximum: 100 },
-    { args: ["emails", "search", "q", "--limit", "0"], maximum: 1000 },
-    { args: ["emails", "search", "q", "--limit", "1001"], maximum: 1000 },
+    { args: ["emails", "list", "--limit", "0"], maximum: maxPageSize },
+    {
+      args: ["emails", "list", "--limit", `${maxPageSize + 1}`],
+      maximum: maxPageSize,
+    },
+    { args: ["emails", "list", "--limit", "1.5"], maximum: maxPageSize },
+    { args: ["emails", "list", "--limit", "nope"], maximum: maxPageSize },
+    {
+      args: ["emails", "search", "q", "--limit", "0"],
+      maximum: maxSearchPageSize,
+    },
+    {
+      args: ["emails", "search", "q", "--limit", `${maxSearchPageSize + 1}`],
+      maximum: maxSearchPageSize,
+    },
   ];
 
   for (const { args, maximum } of cases) {

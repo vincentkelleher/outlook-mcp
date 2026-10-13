@@ -13,7 +13,10 @@ import {
 } from "./core/device-login.ts";
 import {
   createGraph,
+  defaultPageSize,
   maxAttachmentBytes,
+  maxPageSize,
+  maxSearchPageSize,
   withoutUndefined,
 } from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
@@ -30,17 +33,17 @@ export type ToolDeps = {
   config: Config;
   authStatus: () => Promise<AuthStatus>;
   startLogin: (config: Config) => void;
-  logout: (cachePath: string) => void;
+  logout: (config: Config) => void;
 };
 
-export type ToolAnnotations = {
+type ToolAnnotations = {
   readOnlyHint: boolean;
   destructiveHint: boolean;
   idempotentHint: boolean;
   openWorldHint: boolean;
 };
 
-export type Tool = {
+type Tool = {
   name: string;
   title: string;
   description: string;
@@ -192,7 +195,7 @@ const coreTools: Tool[] = [
   tool({
     name: "list_emails",
     title: "List emails",
-    description: `List emails in a mailbox folder, newest first. Returns { items, nextCursor }, where each item carries ${summary} and never a body - only get_email returns the body. Defaults to the inbox, 10 emails, read and unread. nextCursor is opaque: send it back as cursor for the next page and stop when it is absent.`,
+    description: `List emails in a mailbox folder, newest first. Returns { items, nextCursor }, where each item carries ${summary} and never a body - only get_email returns the body. Defaults to the inbox, ${defaultPageSize} emails, read and unread. nextCursor is opaque: send it back as cursor for the next page and stop when it is absent.`,
     annotations: read,
     inputSchema: z.strictObject({
       folder: z
@@ -210,9 +213,11 @@ const coreTools: Tool[] = [
         .number()
         .int()
         .min(1)
-        .max(100)
+        .max(maxPageSize)
         .optional()
-        .describe("Maximum emails to return, 1 to 100. Defaults to 10."),
+        .describe(
+          `Maximum emails to return, 1 to ${maxPageSize}. Defaults to ${defaultPageSize}.`,
+        ),
       cursor: cursorField,
     }),
     handler: async (deps, { folder, unread, limit, cursor }) => ({
@@ -227,7 +232,7 @@ const coreTools: Tool[] = [
   tool({
     name: "search_emails",
     title: "Search emails",
-    description: `Search the whole mailbox with Microsoft Graph search syntax: bare words match subject, body and attachments; narrow with from:someone@example.com, subject:word, body:phrase, received:2024-03-01, isRead:false or hasAttachments:true. Quote a phrase to match it exactly, as in subject:"quarterly report". Returns { items, nextCursor } in the same shape as list_emails, with no bodies. Limits are 1 to 1000 emails, default 10; broad queries are slow on a large mailbox, so keep them specific.`,
+    description: `Search the whole mailbox with Microsoft Graph search syntax: bare words match subject, body and attachments; narrow with from:someone@example.com, subject:word, body:phrase, received:2024-03-01, isRead:false or hasAttachments:true. Quote a phrase to match it exactly, as in subject:"quarterly report". Returns { items, nextCursor } in the same shape as list_emails, with no bodies. Limits are 1 to ${maxSearchPageSize} emails, default ${defaultPageSize}; broad queries are slow on a large mailbox, so keep them specific.`,
     annotations: read,
     inputSchema: z.strictObject({
       query: z
@@ -240,9 +245,11 @@ const coreTools: Tool[] = [
         .number()
         .int()
         .min(1)
-        .max(1000)
+        .max(maxSearchPageSize)
         .optional()
-        .describe("Maximum emails to return, 1 to 1000. Defaults to 10."),
+        .describe(
+          `Maximum emails to return, 1 to ${maxSearchPageSize}. Defaults to ${defaultPageSize}.`,
+        ),
       cursor: cursorField,
     }),
     handler: async (deps, { query, limit, cursor }) => ({
@@ -387,7 +394,7 @@ const coreTools: Tool[] = [
     name: "logout",
     title: "Sign out",
     description:
-      "Delete the saved Outlook session on this machine, so every read tool fails until login runs again. Nothing else is removed and no mail is deleted, but the user has to sign in again, so ask before calling it.",
+      "Delete the saved Outlook session on this machine, together with any record of an earlier sign-in attempt, so every read tool fails until login runs again. Nothing else is removed and no mail is deleted, but the user has to sign in again, so ask before calling it.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -396,7 +403,7 @@ const coreTools: Tool[] = [
     },
     inputSchema: noArguments,
     handler: async (deps) => {
-      deps.logout(deps.config.cachePath);
+      deps.logout(deps.config);
       return { signedOut: true, cachePath: deps.config.cachePath };
     },
   }),
@@ -618,9 +625,11 @@ const draftTools: Tool[] = [
         .number()
         .int()
         .min(1)
-        .max(100)
+        .max(maxPageSize)
         .optional()
-        .describe("Maximum drafts to return, 1 to 100. Defaults to 10."),
+        .describe(
+          `Maximum drafts to return, 1 to ${maxPageSize}. Defaults to ${defaultPageSize}.`,
+        ),
       cursor: cursorField,
     }),
     handler: async (deps, { limit, cursor }) => ({
@@ -680,6 +689,15 @@ const draftTools: Tool[] = [
 
 /** The whole registry, filtered per caller by `toolsFor`. */
 export const tools: Tool[] = [...coreTools, ...draftTools];
+
+/**
+ * The two halves of the registry, by name: what a read-only server advertises,
+ * and the draft surface that mode hides. Anything that has to list tools - the
+ * server's instructions, the tests that check them - takes the list from here
+ * instead of copying it, so prose cannot fall behind a registered tool.
+ */
+export const readToolNames: string[] = coreTools.map((tool) => tool.name);
+export const draftToolNames: string[] = draftTools.map((tool) => tool.name);
 
 /**
  * Readonly mode advertises no mailbox write at all: the draft tools are gone

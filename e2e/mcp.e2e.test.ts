@@ -5,32 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { draftToolNames, readToolNames } from "../src/tools.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const binArgs = (process.env.OUTLOOK_E2E_BIN ?? "src/index.ts").split(" ");
 const placeholderClientId = "00000000-0000-0000-0000-000000000000";
-// An env var, never a flag: one process cannot disagree with itself about
-// whether it may write, and login and serve must ask Microsoft for the same
-// permissions. Nothing here may set it per command.
-const readToolNames = [
-  "auth_status",
-  "download_attachment",
-  "get_email",
-  "list_attachments",
-  "list_emails",
-  "login",
-  "logout",
-  "search_emails",
-];
-const draftToolNames = [
-  "add_attachment",
-  "create_draft",
-  "create_forward_draft",
-  "create_reply_draft",
-  "delete_draft",
-  "list_drafts",
-  "update_draft",
-];
 
 type Frame = {
   id?: number;
@@ -58,7 +37,10 @@ function startServer(home: string, env: Record<string, string> = {}) {
       OUTLOOK_OAUTH_CLIENT_ID: placeholderClientId,
       OUTLOOK_MCP_STATE_DIR: join(home, "state"),
       OUTLOOK_MCP_ATTACHMENT_DIR: join(home, "attachments"),
-      // The mode is set here or not at all, never inherited from the shell.
+      // An env var, never a flag: one process cannot disagree with itself about
+      // whether it may write, and login and serve must ask Microsoft for the
+      // same permissions. It is set here or not at all, never inherited from the
+      // shell, and never per command.
       OUTLOOK_MCP_READONLY: "",
       ...env,
     },
@@ -202,10 +184,10 @@ test("read-only mode serves only the read tools and says so on stderr", async (t
   server.notify("notifications/initialized");
 
   const listed = await server.request(2, "tools/list");
+  // Pinned against the read half of the registry, so a draft tool served in this
+  // mode fails the comparison instead of needing its own assertion.
   const names = listed.result?.tools?.map((tool) => tool.name) ?? [];
   assert.deepEqual(names.sort(), [...readToolNames].sort());
-  for (const draft of draftToolNames)
-    assert.equal(names.includes(draft), false, `${draft} is advertised`);
 
   // The session reports the mode and the permissions behind it, so an agent
   // that cannot find create_draft can see why rather than guess.

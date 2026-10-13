@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { loadConfig, loadEnvFile } from "../src/core/config.ts";
+
+const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const clientId = "00000000-0000-0000-0000-000000000000";
 
@@ -16,7 +19,7 @@ test("the .env file fills in what the environment is missing", (t) => {
       "# a comment",
       `OUTLOOK_OAUTH_CLIENT_ID=${clientId}`,
       'OUTLOOK_OAUTH_TENANT="organizations"',
-      "  export OUTLOOK_MCP_LOG_LEVEL = DEBUG ",
+      "  export OUTLOOK_MCP_ATTACHMENT_DIR = /srv/attachments ",
       "OUTLOOK_MCP_READONLY=1",
       "",
       "not a pair",
@@ -26,7 +29,7 @@ test("the .env file fills in what the environment is missing", (t) => {
   const env = loadEnvFile(dir, { OUTLOOK_MCP_STATE_DIR: "/srv/state" });
   assert.equal(env.OUTLOOK_OAUTH_CLIENT_ID, clientId);
   assert.equal(env.OUTLOOK_OAUTH_TENANT, "organizations");
-  assert.equal(env.OUTLOOK_MCP_LOG_LEVEL, "DEBUG");
+  assert.equal(env.OUTLOOK_MCP_ATTACHMENT_DIR, "/srv/attachments");
   assert.equal(env.OUTLOOK_MCP_READONLY, "1");
 
   const config = loadConfig(env);
@@ -36,7 +39,7 @@ test("the .env file fills in what the environment is missing", (t) => {
     "https://login.microsoftonline.com/organizations/",
   );
   assert.equal(config.stateDir, "/srv/state");
-  assert.equal(config.logLevel, "debug");
+  assert.equal(config.attachmentDir, "/srv/attachments");
   assert.equal(config.readonly, true);
 
   // A variable already set in the environment is never replaced by the file.
@@ -60,17 +63,27 @@ test("defaults keep an existing install on its current cache", () => {
   assert.equal(config.stateDir, "/home/someone/.outlook-skill/state");
   assert.equal(config.attachmentDir, join(tmpdir(), "outlook-mcp"));
   assert.equal(config.readonly, false);
-  assert.equal(config.logLevel, "info");
 
   const moved = loadConfig({
     HOME: "/home/someone",
     OUTLOOK_SKILL_HOME: "/srv/outlook",
     OUTLOOK_MCP_STATE_DIR: "/srv/state",
     OUTLOOK_MCP_ATTACHMENT_DIR: "/srv/attachments",
-    OUTLOOK_MCP_LOG_LEVEL: "not-a-level",
   });
   assert.equal(moved.cachePath, "/srv/outlook/msal-cache.json");
   assert.equal(moved.stateDir, "/srv/state");
   assert.equal(moved.attachmentDir, "/srv/attachments");
-  assert.equal(moved.logLevel, "info");
+});
+
+test("a level nothing reads is neither documented nor carried", () => {
+  // OUTLOOK_MCP_LOG_LEVEL set a knob no code looked at: there is no logger, so a
+  // stale variable in a user's environment must not be advertised as a control.
+  const readme = readFileSync(join(repo, "README.md"), "utf8");
+  assert.equal(readme.includes("OUTLOOK_MCP_LOG_LEVEL"), false);
+
+  const config = loadConfig({
+    HOME: "/home/someone",
+    OUTLOOK_MCP_LOG_LEVEL: "debug",
+  });
+  assert.equal("logLevel" in config, false);
 });

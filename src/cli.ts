@@ -14,7 +14,12 @@ import {
   runLogin,
   startLogin,
 } from "./core/device-login.ts";
-import { createGraph } from "./core/graph.ts";
+import {
+  createGraph,
+  defaultPageSize,
+  maxPageSize,
+  maxSearchPageSize,
+} from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
 import type { AuthStatus } from "./core/auth.ts";
 
@@ -77,7 +82,7 @@ export async function main(
     .command("logout")
     .description("Delete the saved Outlook session")
     .action(() => {
-      logout(config.cachePath);
+      logout(config);
       console.error("Signed out.");
     });
 
@@ -116,11 +121,15 @@ export async function main(
     .command("list")
     .description("List Inbox emails")
     .option("--unread", "only unread emails")
-    .option("--limit <number>", "maximum emails to return", "10")
+    .option(
+      "--limit <number>",
+      `maximum emails to return, 1 to ${maxPageSize}`,
+      `${defaultPageSize}`,
+    )
     .action(async ({ unread, limit: value }) => {
       const { items } = await graph.listMessages({
         unread,
-        top: parseLimit(value, 100),
+        top: parseLimit(value, maxPageSize),
       });
       console.log(JSON.stringify(items, null, 2));
     });
@@ -144,11 +153,15 @@ export async function main(
   emails
     .command("search <query>")
     .description("Search the mailbox")
-    .option("--limit <number>", "maximum emails to return", "10")
+    .option(
+      "--limit <number>",
+      `maximum emails to return, 1 to ${maxSearchPageSize}`,
+      `${defaultPageSize}`,
+    )
     .action(async (query, { limit: value }) => {
       const { items } = await graph.searchMessages({
         query,
-        top: parseLimit(value, 1000),
+        top: parseLimit(value, maxSearchPageSize),
       });
       console.log(JSON.stringify(items, null, 2));
     });

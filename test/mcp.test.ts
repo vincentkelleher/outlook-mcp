@@ -13,13 +13,23 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/mcp.ts";
-import { maxEchoedBodyChars, maxInlineBytes, tools } from "../src/tools.ts";
+import {
+  draftToolNames,
+  maxEchoedBodyChars,
+  maxInlineBytes,
+  readToolNames,
+} from "../src/tools.ts";
 import type { ToolDeps } from "../src/tools.ts";
 import { loadConfig } from "../src/core/config.ts";
 import type { Config } from "../src/core/config.ts";
 import { writeLoginState } from "../src/core/device-login.ts";
 import { AuthRequiredError, noSessionMessage } from "../src/core/errors.ts";
 import type { Graph, Page } from "../src/core/graph.ts";
+import {
+  defaultPageSize,
+  maxPageSize,
+  maxSearchPageSize,
+} from "../src/core/graph.ts";
 
 const clientId = "00000000-0000-0000-0000-000000000000";
 const readAnnotations = {
@@ -263,8 +273,8 @@ function fakeDeps(
         expiresAt: "2030-01-01T00:00:00.000Z",
       });
     },
-    logout: (cachePath) => {
-      calls.logouts.push(cachePath);
+    logout: (session) => {
+      calls.logouts.push(session.cachePath);
     },
   };
   return { deps, calls };
@@ -331,40 +341,23 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
   const client = await connect(t, deps);
   const listed = await client.listTools();
 
-  assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
-    "add_attachment",
-    "auth_status",
-    "create_draft",
-    "create_forward_draft",
-    "create_reply_draft",
-    "delete_draft",
-    "download_attachment",
-    "get_email",
-    "list_attachments",
-    "list_drafts",
-    "list_emails",
-    "login",
-    "logout",
-    "search_emails",
-    "update_draft",
-  ]);
+  // The full surface is the registry's own two halves: the read and sign-in
+  // tools plus the draft tools this mode exposes. The read-only half of the same
+  // pair is pinned in test/no-send.test.ts.
   assert.deepEqual(
     listed.tools.map((tool) => tool.name).sort(),
-    tools.map((tool) => tool.name).sort(),
+    [...readToolNames, ...draftToolNames].sort(),
   );
   assert.equal(
     listed.tools.find((tool) => tool.name === "list_emails")?.title,
     "List emails",
   );
 
-  const signed = [
-    "list_emails",
-    "search_emails",
-    "get_email",
-    "list_attachments",
-    "download_attachment",
-    "auth_status",
-  ];
+  // Everything that only reads the mailbox, which is the read half less the two
+  // sign-in tools that write the local session instead of reading mail.
+  const signed = readToolNames.filter(
+    (name) => name !== "login" && name !== "logout",
+  );
   for (const name of signed) {
     assert.deepEqual(
       listed.tools.find((tool) => tool.name === name)?.annotations,
@@ -378,14 +371,7 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
 
   // The annotations are what make a careful client ask the human first, so they
   // are asserted on everything that writes a draft.
-  for (const name of [
-    "create_draft",
-    "create_reply_draft",
-    "create_forward_draft",
-    "update_draft",
-    "list_drafts",
-    "add_attachment",
-  ]) {
+  for (const name of draftToolNames.filter((name) => name !== "delete_draft")) {
     assert.deepEqual(
       listed.tools.find((tool) => tool.name === name)?.annotations,
       writeAnnotations,
@@ -410,11 +396,47 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
       maximum: schema?.properties?.limit?.maximum,
     };
   };
-  assert.deepEqual(bounds("list_emails"), { minimum: 1, maximum: 100 });
-  assert.deepEqual(bounds("search_emails"), { minimum: 1, maximum: 1000 });
+  assert.deepEqual(bounds("list_emails"), {
+    minimum: 1,
+    maximum: maxPageSize,
+  });
+  assert.deepEqual(bounds("list_drafts"), {
+    minimum: 1,
+    maximum: maxPageSize,
+  });
+  assert.deepEqual(bounds("search_emails"), {
+    minimum: 1,
+    maximum: maxSearchPageSize,
+  });
+
+  // The page sizes are one number in one place, so the sentence an agent reads
+  // cannot promise a bound the schema then refuses.
+  const limitText = (name: string) =>
+    (
+      listed.tools.find((tool) => tool.name === name)?.inputSchema as {
+        properties?: { limit?: { description?: string } };
+      }
+    ).properties?.limit?.description ?? "";
+  for (const [name, maximum] of [
+    ["list_emails", maxPageSize],
+    ["list_drafts", maxPageSize],
+    ["search_emails", maxSearchPageSize],
+  ] as const) {
+    assert.match(
+      limitText(name),
+      new RegExp(`1 to ${maximum}\\b`),
+      `${name} limit text`,
+    );
+    assert.match(
+      limitText(name),
+      new RegExp(`Defaults to ${defaultPageSize}\\b`),
+      `${name} default text`,
+    );
+  }
+
   for (const [name, maximum, required] of [
-    ["list_emails", 100, {}],
-    ["search_emails", 1000, { query: "invoice" }],
+    ["list_emails", maxPageSize, {}],
+    ["search_emails", maxSearchPageSize, { query: "invoice" }],
   ] as const) {
     const at = (limit: number) => call(client, name, { ...required, limit });
     assert.equal(
@@ -1060,7 +1082,7 @@ test("resources expose folders, the inbox and one message", async (t) => {
 
   await assert.rejects(
     client.readResource({ uri: "outlook://inbox?unread=false&limit=500" }),
-    /limit must be an integer from 1 to 100/,
+    new RegExp(`limit must be an integer from 1 to ${maxPageSize}`),
   );
 });
 

@@ -4,9 +4,6 @@ import { join } from "node:path";
 
 export type Env = Record<string, string | undefined>;
 
-const logLevels = ["debug", "info", "warn", "error"] as const;
-export type LogLevel = (typeof logLevels)[number];
-
 export type Config = {
   clientId: string | undefined;
   authority: string;
@@ -14,7 +11,6 @@ export type Config = {
   stateDir: string;
   attachmentDir: string;
   readonly: boolean;
-  logLevel: LogLevel;
 };
 
 /**
@@ -43,6 +39,16 @@ export function homeDir(env: Env) {
 }
 
 /**
+ * The sign-in state file, named here because two modules have to agree on it:
+ * `device-login.ts` writes it and `logout` removes it, so that signing out also
+ * clears the last sign-in failure. It carries a URL, a code and an error, never
+ * a token.
+ */
+export function loginStatePath(config: Config): string {
+  return join(config.stateDir, "login.json");
+}
+
+/**
  * Delegated Graph permissions. Creating or changing a message - which is all a
  * draft is - needs `Mail.ReadWrite`, so a readonly server asks for `Mail.Read`
  * instead and gets no write tool. The consent prompt shows these names, so they
@@ -55,11 +61,6 @@ export function scopesFor(readonly: boolean): string[] {
     "email",
     "profile",
   ];
-}
-
-function readLogLevel(env: Env): LogLevel {
-  const value = env.OUTLOOK_MCP_LOG_LEVEL?.toLowerCase();
-  return logLevels.find((level) => level === value) ?? "info";
 }
 
 export function loadConfig(env: Env = loadEnvFile()): Config {
@@ -75,6 +76,5 @@ export function loadConfig(env: Env = loadEnvFile()): Config {
     readonly: !["", "0", "false"].includes(
       (env.OUTLOOK_MCP_READONLY ?? "").toLowerCase(),
     ),
-    logLevel: readLogLevel(env),
   };
 }

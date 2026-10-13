@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,7 @@ import type {
 } from "../src/core/auth.ts";
 import { loadConfig } from "../src/core/config.ts";
 import type { Env } from "../src/core/config.ts";
+import { readLoginState, writeLoginState } from "../src/core/device-login.ts";
 import { AuthRequiredError } from "../src/core/errors.ts";
 
 const clientId = "00000000-0000-0000-0000-000000000000";
@@ -455,10 +457,52 @@ test("drafts need Mail.ReadWrite and readonly asks for Mail.Read only", async ()
 });
 
 test("logout is safe when the cache is present or absent", () => {
+  const config = testConfig();
+  logout(config);
+  mkdirSync(dirname(config.cachePath), { recursive: true });
+  writeFileSync(config.cachePath, "session");
+  logout(config);
+  assert.equal(existsSync(config.cachePath), false);
+});
+
+test("logout takes the record of a failed sign-in with the session", () => {
+  // A lastLoginError outlives the session it belongs to otherwise, and the next
+  // agent to ask auth_status reads an old failure as a fresh one.
+  const config = testConfig();
+  writeLoginState(config, { state: "error", message: "no client id" });
+  assert.equal(readLoginState(config)?.state, "error");
+
+  logout(config);
+
+  assert.equal(readLoginState(config), undefined);
+});
+
+test("a plaintext cache copy left by a killed write is swept on the next read", async () => {
   const cache = tempCache();
-  logout(cache);
   mkdirSync(dirname(cache), { recursive: true });
-  writeFileSync(cache, "session");
-  logout(cache);
-  assert.equal(existsSync(cache), false);
+  const stale = join(dirname(cache), ".msal-cache.4242.dead.tmp");
+  const fresh = join(dirname(cache), ".msal-cache.9999.alive.tmp");
+  const other = join(dirname(cache), "notes.txt");
+  for (const path of [stale, fresh, other]) writeFileSync(path, "token cache");
+  const anHourAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  utimesSync(stale, anHourAgo, anHourAgo);
+
+  await createCachePlugin(cache).beforeCacheAccess({
+    tokenCache: { deserialize: () => {} },
+  } as never);
+
+  assert.equal(existsSync(stale), false, "the abandoned copy is gone");
+  assert.equal(existsSync(fresh), true, "another client's write is left alone");
+  assert.equal(
+    existsSync(other),
+    true,
+    "nothing else in the directory is gone",
+  );
+});
+
+test("createAuth hands back only what a caller uses", () => {
+  // The config is the caller's own: a copy on the return value was never read.
+  const { factory } = fakeMsal({ accounts: [[]] });
+  const auth = createAuth({ config: testConfig(), msal: factory });
+  assert.deepEqual(Object.keys(auth).sort(), ["accessToken", "authStatus"]);
 });

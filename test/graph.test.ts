@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createGraph,
+  defaultPageSize,
   maxAttachmentBytes,
+  maxPageSize,
   messagesPath,
 } from "../src/core/graph.ts";
 import type { GraphClient, GraphRequest } from "../src/core/graph.ts";
@@ -125,7 +127,23 @@ test("list messages omits the unread filter unless asked", async () => {
 
   const request = requests[0];
   assert.equal(request.filter, undefined);
-  assert.equal(request.top, 10);
+  assert.equal(request.top, defaultPageSize);
+});
+
+test("a page that names no size asks for the one every caller describes", async () => {
+  const { graph, requests } = graphFor();
+
+  await graph.listMessages();
+  await graph.searchMessages({ query: "invoice" });
+  await graph.listDrafts();
+  // A folder list takes no size from a caller, so it asks for the most one page
+  // may carry - the same maximum every list tool accepts.
+  await graph.listFolders();
+
+  assert.deepEqual(
+    requests.map((request) => request.top),
+    [defaultPageSize, defaultPageSize, defaultPageSize, maxPageSize],
+  );
 });
 
 test("folders resolve to Graph paths and unsafe names are refused", async () => {

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -45,15 +51,28 @@ function deadPid(): number {
 
 /**
  * A fake launcher that records what it was asked to run and reports the
- * caller's own pid, so the liveness check has a living process to find.
+ * caller's own pid, so the liveness check has a living process to find. `fail`
+ * stands in for a spawn that never happened, which a real child reports on the
+ * event loop rather than by throwing.
  */
 function fakeSpawn() {
   const launched: string[][] = [];
+  const listeners: ((error: Error) => void)[] = [];
   return {
     launched,
+    fail: (error: Error) => {
+      for (const listener of listeners.splice(0)) listener(error);
+    },
     spawnChild: (command: string, args: string[]) => {
       launched.push([command, ...args]);
-      return { pid: process.pid, unref: () => {} };
+      return {
+        pid: process.pid,
+        unref: () => {},
+        on: (event: "error", listener: (error: unknown) => unknown) => {
+          if (event === "error")
+            listeners.push(listener as (error: Error) => void);
+        },
+      };
     },
   };
 }
@@ -153,6 +172,40 @@ test("startLogin records the flow it started and will not start a second one", (
     rawState(config).userCode,
     "ABC-XYZ",
     "the open flow was replaced, which is how its result was lost before",
+  );
+});
+
+test("a sign-in that never started says so instead of looking slow", async (t) => {
+  const config = testConfig(t);
+  const { spawnChild, fail } = fakeSpawn();
+  const start = (started: Config) =>
+    startLogin(started, { spawnChild, entry: join("some", "index.js") });
+
+  const launch = beginLogin(config, start);
+  // The failure arrives after the launch returned, as a real one does.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  fail(new Error("spawn /nope/node EACCES"));
+
+  const reported = await launch;
+  assert.equal(reported.state, "error");
+  assert.match(
+    reported.instructions,
+    /Sign-in could not start \(spawn \/nope\/node EACCES\)/,
+  );
+  assert.equal(readLoginState(config)?.message, "spawn /nope/node EACCES");
+});
+
+test("the state directory and its file are owner-only", (t) => {
+  const config = testConfig(t);
+  // A directory that already exists keeps whatever mode it was made with, and
+  // mkdir's own mode is filtered by the umask, so both need stating again.
+  mkdirSync(config.stateDir, { recursive: true, mode: 0o755 });
+  writeLoginState(config, { state: "pending", userCode: "ABC-XYZ" });
+
+  assert.equal(statSync(config.stateDir).mode & 0o777, 0o700);
+  assert.equal(
+    statSync(join(config.stateDir, "login.json")).mode & 0o777,
+    0o600,
   );
 });
 

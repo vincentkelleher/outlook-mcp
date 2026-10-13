@@ -1,6 +1,6 @@
 import { Client } from "@microsoft/microsoft-graph-client";
 
-export type TokenProvider = () => Promise<string>;
+type TokenProvider = () => Promise<string>;
 
 /** The subset of the Graph SDK request builder this project calls. */
 export type GraphRequest = {
@@ -20,9 +20,9 @@ export type GraphClient = {
   api(path: string): GraphRequest;
 };
 
-export type GraphClientFactory = (token: TokenProvider) => GraphClient;
+type GraphClientFactory = (token: TokenProvider) => GraphClient;
 
-export type GraphDeps = {
+type GraphDeps = {
   token: TokenProvider;
   client?: GraphClientFactory;
 };
@@ -38,7 +38,7 @@ type GraphCollection = {
 };
 
 /** What a draft carries. Absent keys are left out of the request, not cleared. */
-export type DraftContent = {
+type DraftContent = {
   to?: string[];
   cc?: string[];
   bcc?: string[];
@@ -48,11 +48,22 @@ export type DraftContent = {
   categories?: string[];
 };
 
-export type AttachmentUpload = {
+type AttachmentUpload = {
   name: string;
   contentType: string;
   contentBase64: string;
 };
+
+/**
+ * The page sizes, in one place because an agent is told them in prose: a
+ * default, the most any single page asks for - emails in a list, drafts, folders
+ * - and the larger ceiling a search may ask for, since a query narrows on its
+ * own. Every schema, error message and description quotes these, so a limit
+ * cannot disagree with the text a caller was given.
+ */
+export const defaultPageSize = 10;
+export const maxPageSize = 100;
+export const maxSearchPageSize = 1000;
 
 /**
  * Graph accepts an attachment in one request only while it stays under 3 MB;
@@ -61,7 +72,7 @@ export type AttachmentUpload = {
  */
 export const maxAttachmentBytes = 3 * 1024 * 1024;
 
-export type Folder = {
+type Folder = {
   id: string;
   displayName: string;
   totalItemCount?: number;
@@ -191,7 +202,12 @@ export function createGraph(deps: GraphDeps) {
       cursor?: string;
     } = {},
   ) {
-    const { folder = "inbox", unread = false, top = 10, cursor } = options;
+    const {
+      folder = "inbox",
+      unread = false,
+      top = defaultPageSize,
+      cursor,
+    } = options;
     // A cursor is a Graph nextLink, which already carries every query option.
     if (cursor) return page(assertGraphCursor(cursor));
     return page(messagesPath(folder), (request) => {
@@ -208,7 +224,7 @@ export function createGraph(deps: GraphDeps) {
     top?: number;
     cursor?: string;
   }) {
-    const { query, top = 10, cursor } = options;
+    const { query, top = defaultPageSize, cursor } = options;
     if (cursor) return page(assertGraphCursor(cursor));
     return page("/me/messages", (request) =>
       request
@@ -237,7 +253,7 @@ export function createGraph(deps: GraphDeps) {
 
   async function listFolders() {
     return page<Folder>("/me/mailFolders", (request) =>
-      request.select(folderFields.split(",")).top(100),
+      request.select(folderFields.split(",")).top(maxPageSize),
     );
   }
 
@@ -286,7 +302,7 @@ export function createGraph(deps: GraphDeps) {
   }
 
   async function listDrafts(options: { top?: number; cursor?: string } = {}) {
-    const { top = 10, cursor } = options;
+    const { top = defaultPageSize, cursor } = options;
     if (cursor) return page(assertGraphCursor(cursor));
     return page(messagesPath("drafts"), (request) =>
       request

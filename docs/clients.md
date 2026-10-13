@@ -328,10 +328,11 @@ If your harness cannot expand `${VAR}`, put the literal client id there.
 
 ## What was verified, and what was not
 
-Verified against official documentation, and recorded in
-`docs/plan-mcp-skill.md`: **Pi**, **Claude Code**, **Codex**, and **VS Code /
-Copilot** — the add commands, the environment-variable strategy, the units, and
-the failure modes in the matrix above.
+Verified against each client's own official documentation, and recorded entry by
+entry in `src/core/clients.ts`, where the absence of an `unverified` note is the
+record: **Pi**, **Claude Code**, **Codex**, and the **VS Code / Copilot** shape —
+the add commands, the environment-variable strategy, the units, and the failure
+modes in the matrix above.
 
 Also checked against npm's documentation: the git-specifier and tarball
 behaviour, `prepare`, `files` versus `.gitignore`, and `engines`.
