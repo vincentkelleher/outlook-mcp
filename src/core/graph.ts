@@ -34,9 +34,17 @@ type GraphCollection = {
   "@odata.nextLink"?: string;
 };
 
+export type Folder = {
+  id: string;
+  displayName: string;
+  totalItemCount?: number;
+  unreadItemCount?: number;
+};
+
 const messageFields =
   "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments";
 const fullMessageFields = `${messageFields},toRecipients,ccRecipients,body`;
+const folderFields = "id,displayName,totalItemCount,unreadItemCount";
 const folderPattern = /^[A-Za-z0-9][A-Za-z0-9 ._@-]*$/;
 
 function sdkClient(token: TokenProvider): GraphClient {
@@ -125,6 +133,12 @@ export function createGraph(deps: GraphDeps) {
       .get();
   }
 
+  async function listFolders() {
+    return page<Folder>("/me/mailFolders", (request) =>
+      request.select(folderFields.split(",")).top(100),
+    );
+  }
+
   async function listAttachments(messageId: string) {
     const path = `/me/messages/${encodeURIComponent(messageId)}/attachments`;
     const collected: { id: string }[] = [];
@@ -143,6 +157,7 @@ export function createGraph(deps: GraphDeps) {
     listMessages,
     searchMessages,
     getMessage,
+    listFolders,
     listAttachments,
     getAttachment,
   };

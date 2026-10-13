@@ -1,6 +1,7 @@
 import { Command } from "commander";
-import { accessToken, logout } from "./core/auth.ts";
-import { loadConfig, loadEnvFile } from "./core/config.ts";
+import { createAuth, logout } from "./core/auth.ts";
+import { loadConfig } from "./core/config.ts";
+import { beginLogin, runLogin, startLogin } from "./core/device-login.ts";
 import { createGraph } from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
 
@@ -17,20 +18,31 @@ export async function main(
   argv: string[] = process.argv,
   deps: CliDeps = {},
 ): Promise<void> {
-  const env = loadEnvFile();
-  const config = loadConfig(env);
-  const graph = deps.graph ?? createGraph({ token: () => accessToken(env) });
+  const config = loadConfig();
+  const auth = createAuth({ config });
+  const graph = deps.graph ?? createGraph({ token: () => auth.accessToken() });
 
   const program = new Command()
     .name("outlook")
-    .description("Read Outlook email");
+    .description("Read Outlook email; with no arguments, serve MCP over stdio");
   const emails = program.command("emails").description("List or search email");
 
   program
     .command("login")
     .description("Sign in and save the Outlook session")
-    .action(async () => {
-      await accessToken(env, { interactive: true });
+    .option(
+      "--background",
+      "sign in from a detached process and return as soon as the code exists",
+    )
+    .option("--json", "with --background, print the sign-in state as JSON")
+    .action(async ({ background, json }) => {
+      if (background) {
+        const launch = await beginLogin(config, startLogin);
+        if (json) console.log(JSON.stringify(launch));
+        else console.error(launch.instructions);
+        return;
+      }
+      await runLogin(config);
       console.error("Signed in.");
     });
 

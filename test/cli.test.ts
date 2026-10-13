@@ -26,6 +26,9 @@ function fakeGraph(): { graph: Graph; calls: Calls } {
       calls.get.push(id);
       return { id };
     },
+    async listFolders() {
+      return { items: [{ id: "folder-1", displayName: "Inbox" }] };
+    },
     async listAttachments(messageId) {
       calls.attachments.push(messageId);
       return [{ id: "attachment" }];

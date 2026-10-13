@@ -24,6 +24,14 @@ const scopes = ["User.Read", "Mail.Read", "email", "profile"];
 export type MsalAccount = { username?: string };
 export type MsalResult = { accessToken?: string };
 
+/** What MSAL hands the device-code callback; the code and URL are user-facing. */
+export type DeviceCodeInfo = {
+  message: string;
+  userCode?: string;
+  verificationUri?: string;
+  expiresIn?: number;
+};
+
 /** The slice of MSAL this project uses, so tests can pass a fake application. */
 export type MsalApplication = {
   getTokenCache(): { getAllAccounts(): Promise<MsalAccount[]> };
@@ -33,7 +41,7 @@ export type MsalApplication = {
   }): Promise<MsalResult>;
   acquireTokenByDeviceCode(options: {
     scopes: string[];
-    deviceCodeCallback: (response: { message: string }) => void;
+    deviceCodeCallback: (response: DeviceCodeInfo) => void;
   }): Promise<MsalResult | null>;
 };
 
@@ -106,14 +114,17 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
   }
 
   async function accessToken(
-    options: { interactive?: boolean } = {},
+    options: {
+      interactive?: boolean;
+      onDeviceCode?: (info: DeviceCodeInfo) => void;
+    } = {},
   ): Promise<string> {
     const account = await firstAccount();
     if (account) {
       try {
         return await silent(account);
       } catch (error) {
-        if (options.interactive) return deviceToken();
+        if (options.interactive) return deviceToken(options.onDeviceCode);
         // Another client may have refreshed the shared cache since we read it,
         // so re-read and retry once before asking anyone to sign in again.
         const refreshed = await firstAccount();
@@ -131,13 +142,16 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
       }
     }
     if (!options.interactive) throw new AuthRequiredError(noSessionMessage);
-    return deviceToken();
+    return deviceToken(options.onDeviceCode);
   }
 
-  async function deviceToken() {
+  async function deviceToken(onDeviceCode?: (info: DeviceCodeInfo) => void) {
     const result = await msal().acquireTokenByDeviceCode({
       scopes,
-      deviceCodeCallback: (response) => console.error(response.message),
+      // A caller that takes the callback owns the prompt, so the flow is
+      // reported once, not twice.
+      deviceCodeCallback:
+        onDeviceCode ?? ((response) => console.error(response.message)),
     });
     return token(result);
   }
