@@ -71,6 +71,8 @@ Verified on this machine (Node v25.0.0): `node file.ts` and `node --test` run Ty
 
 Tool names stay short (`list_emails`) because clients prefix them — Pi exposes `mcp__outlook__list_emails`.
 
+**Schemas are written in zod, deliberately.** Both the v1 `McpServer.registerTool` and the v2 SDK are zod-first — v1 rejects a plain JSON Schema object with "inputSchema must be a Zod schema or raw shape", and the v2 docs describe `inputSchema` as "a Zod schema — the only schema you write" — and `zod` is a declared **peer dependency** of `@modelcontextprotocol/sdk` (`^3.25 || ^4.0`), so declaring it is the intended usage rather than added weight. Every constraint therefore lives in one place and the JSON Schema advertised in `tools/list` is derived from the schema that enforces it, which means an advertised limit cannot drift from a checked one. A test asserts the advertised bounds match the enforced ones. Hand-written JSON Schema plus hand-rolled validation was considered and rejected: it can only drift, and it buys nothing toward the v2 migration.
+
 **Read tools** — `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: true`:
 
 | Tool                  | Inputs                                                            | Notes                                                                                                                          |
