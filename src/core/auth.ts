@@ -11,8 +11,8 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PublicClientApplication } from "@azure/msal-node";
 import type { ICachePlugin } from "@azure/msal-node";
-import { loadConfig, loadEnvFile, scopesFor } from "./config.ts";
-import type { Config, Env } from "./config.ts";
+import { loadConfig, scopesFor } from "./config.ts";
+import type { Config } from "./config.ts";
 import {
   AuthRequiredError,
   expiredSessionMessage,
@@ -166,17 +166,6 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
   }
 
   return { accessToken, authStatus, config };
-}
-
-export function accessToken(
-  env: Env = loadEnvFile(),
-  options: { interactive?: boolean } = {},
-): Promise<string> {
-  return createAuth({ config: loadConfig(env) }).accessToken(options);
-}
-
-export function authStatus(env: Env = loadEnvFile()): Promise<AuthStatus> {
-  return createAuth({ config: loadConfig(env) }).authStatus();
 }
 
 export function logout(cachePath = loadConfig().cachePath) {

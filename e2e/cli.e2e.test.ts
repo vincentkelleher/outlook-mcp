@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -49,12 +50,77 @@ test("CLI exposes every documented command", (t) => {
   assert.match(emails.stdout, /get <id>/);
   assert.match(emails.stdout, /attachments <message-id>/);
   assert.match(emails.stdout, /search \[options\] <query>/);
+  assert.match(root.stdout, /config \[options\] <client>/);
   // Drafts are MCP-only on purpose: a human writes them in Outlook, not here.
   assert.equal(
     `${root.stdout}${emails.stdout}`.toLowerCase().includes("draft"),
     false,
     "the CLI offers no draft command",
   );
+});
+
+test("config prints the shape a client actually reads", (t) => {
+  const home = testHome(t);
+  const pi = outlook(home, "config", "pi");
+  const codex = outlook(home, "config", "codex");
+
+  assert.equal(pi.exitCode, 0, pi.stderr);
+  const server = JSON.parse(pi.stdout).mcpServers.outlook;
+  assert.equal(server.command, "node");
+  // Pi defaults MCP tools to codemode, so the entry has to say otherwise.
+  assert.equal(server.exposure, "direct");
+  assert.equal(
+    server.env.OUTLOOK_OAUTH_CLIENT_ID,
+    "${OUTLOOK_OAUTH_CLIENT_ID}",
+  );
+  // An absolute path into this checkout, built or not, never a relative guess.
+  assert.match(
+    server.args[0],
+    /outlook-skill\/(dist\/index\.js|src\/index\.ts)$/,
+    server.args[0],
+  );
+
+  assert.equal(codex.exitCode, 0, codex.stderr);
+  assert.match(codex.stdout, /^\[mcp_servers\.outlook\]/m);
+  // Codex documents no interpolation, so the variable is forwarded instead.
+  assert.match(codex.stdout, /env_vars = \["OUTLOOK_OAUTH_CLIENT_ID"\]/);
+  assert.equal(codex.stdout.includes("${"), false);
+});
+
+test("config --write merges into the user file, repeats itself, and refuses garbage", (t) => {
+  const home = testHome(t);
+  const file = join(home, ".codex", "config.toml");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, '[mcp_servers.other]\ncommand = "y"\n');
+
+  const first = outlook(home, "config", "codex", "--write");
+  assert.equal(first.exitCode, 0, first.stderr);
+  assert.match(first.stdout, /updated with the outlook server/);
+  const written = readFileSync(file, "utf8");
+  assert.match(written, /\[mcp_servers\.other\]/);
+  assert.match(written, /\[mcp_servers\.outlook\]/);
+
+  const second = outlook(home, "config", "codex", "--write");
+  assert.equal(second.exitCode, 0, second.stderr);
+  assert.match(second.stdout, /already had this outlook server/);
+  assert.equal(readFileSync(file, "utf8"), written);
+
+  writeFileSync(file, "not toml at all\n");
+  const refused = outlook(home, "config", "codex", "--write");
+  assert.equal(refused.exitCode, 1);
+  assert.match(
+    refused.stderr,
+    /never overwrites a configuration file it cannot parse/,
+  );
+  assert.equal(readFileSync(file, "utf8"), "not toml at all\n");
+});
+
+test("config names every client when one is misspelt", (t) => {
+  const home = testHome(t);
+  const result = outlook(home, "config", "notepad");
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /Unknown client "notepad"/);
+  assert.match(result.stderr, /gemini-cli/);
 });
 
 test("logout command removes the saved session", (t) => {

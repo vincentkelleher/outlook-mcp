@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: end-to-end against the built entry
+        run: npm run test:e2e
+        env:
+          OUTLOOK_E2E_BIN: dist/index.js
+      - name: the built entry offers the documented commands
+        run: |
+          node dist/index.js --help | grep -q 'config \[options\] <client>'
+          node dist/index.js --help | grep -q 'emails'
+          node dist/index.js config generic
+
+  node20:
+    name: Node 20 (built entry only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      # Native type stripping does not exist here, so nothing runs the sources:
+      # compile, then smoke-test what a client would actually launch.
+      - run: npm ci
+      - run: npm run build
+      - run: node dist/index.js --help
+      - run: node dist/index.js config vscode
+      - run: node dist/index.js emails list --limit 0 2>&1 | grep -q 'must be an integer'
+
+  guards:
+    name: Guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no Bun identifiers
+        run: |
+          if grep -rn 'Bun\.' src test e2e skills; then
+            echo '::error::Node only: a Bun. identifier appeared in src, test, e2e or skills.'
+            exit 1
+          fi
+
+  pack:
+    name: Release artefact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # GitHub's auto-generated source archives contain no build output and
+      # `prepare` does not run for a tarball install, so the artefact attached to
+      # a release must be `npm pack` output. Assert that it is.
+      - name: pack and inspect the tarball
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack | tail -1)
+          echo "packed $tarball"
+          tar -tzf "$tarball" | grep -q '^package/dist/index\.js$'
+          tar -tzf "$tarball" | grep -q '^package/skills/outlook-skill/SKILL\.md$'
+          tar -xzf "$tarball" -O package/package.json | node -e '
+            let text = "";
+            process.stdin.on("data", (chunk) => (text += chunk));
+            process.stdin.on("end", () => {
+              const manifest = JSON.parse(text);
+              if (!manifest.name || !manifest.version)
+                throw new Error("the packed package.json needs name and version");
+              if (manifest.bin && !manifest.bin["outlook-mcp"])
+                throw new Error("the packed bin does not point at dist/index.js");
+              console.log(manifest.name, manifest.version, manifest.bin["outlook-mcp"]);
+            });
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: outlook-skill-tarball
+          path: outlook-skill-*.tgz
+          if-no-files-found: error

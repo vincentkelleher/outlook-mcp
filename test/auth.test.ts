@@ -12,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  accessToken,
   createAuth,
   createCachePlugin,
   createMsal,
@@ -281,7 +280,7 @@ test("the client id is required before Microsoft is contacted", async () => {
     /Set OUTLOOK_OAUTH_CLIENT_ID in the environment or \.env file\./,
   );
   await assert.rejects(
-    accessToken({}),
+    createAuth({ config: loadConfig({}) }).accessToken(),
     /Set OUTLOOK_OAUTH_CLIENT_ID in the environment or \.env file\./,
   );
 });

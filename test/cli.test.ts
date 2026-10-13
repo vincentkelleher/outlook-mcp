@@ -132,6 +132,27 @@ test("get and attachments pass ids straight through", async () => {
   assert.deepEqual(calls.attachments, ["m1"]);
 });
 
+test("login --background reports an existing session instead of starting a second one", async () => {
+  const { graph, calls } = fakeGraph();
+
+  const result = await runCli(["login", "--background", "--json"], {
+    graph,
+    authStatus: async () => ({
+      signedIn: true,
+      account: "someone@example.com",
+      authority: "https://login.microsoftonline.com/consumers/",
+      cachePath: "/home/someone/.outlook-skill/msal-cache.json",
+    }),
+  });
+
+  assert.equal(result.failure, undefined);
+  const printed = JSON.parse(result.stdout);
+  assert.equal(printed.state, "authorized");
+  assert.equal(printed.account, "someone@example.com");
+  assert.match(printed.instructions, /Already signed in/);
+  assert.deepEqual(calls.list, []);
+});
+
 test("limits are validated against each command maximum", async () => {
   const { graph, calls } = fakeGraph();
   const cases: Array<{ args: string[]; maximum: number }> = [

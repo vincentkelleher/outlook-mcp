@@ -18,8 +18,8 @@ export type Config = {
 };
 
 /**
- * Bun loaded `.env` automatically and Node does not, so every reader starts
- * here. Variables already set in the environment win over the file.
+ * Node does not load `.env`, so every reader starts here: the file is where a
+ * client id belongs and the environment must still win over it.
  */
 export function loadEnvFile(dir = process.cwd(), env: Env = process.env): Env {
   const merged: Env = { ...env };
@@ -37,8 +37,8 @@ export function loadEnvFile(dir = process.cwd(), env: Env = process.env): Env {
 }
 
 // An injected env must be able to move the home directory, which os.homedir()
-// cannot do on its own.
-function homeDir(env: Env) {
+// cannot do on its own. Client configuration files hang off the same root.
+export function homeDir(env: Env) {
   return env.HOME || homedir();
 }
 

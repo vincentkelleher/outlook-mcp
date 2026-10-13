@@ -48,7 +48,7 @@ export function readLoginState(config: Config): LoginState | undefined {
   }
 }
 
-export function clearLoginState(config: Config): void {
+function clearLoginState(config: Config): void {
   rmSync(statePath(config), { force: true });
 }
 
