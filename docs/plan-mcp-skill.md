@@ -99,7 +99,9 @@ Tool names stay short (`list_emails`) because clients prefix them — Pi exposes
 
 **Things we deliberately do not implement: `/send`, `/reply`, `/forward`.** Nothing in the tool registry or `graph.ts` can transmit mail — that is the whole point of the design and is enforced by a test that asserts (a) the registry contains no send-capable tool and (b) no request path ends in `/send`, `/reply`, or `/forward`. Document this invariant in the README and SECURITY.md; it is the strongest thing we can say to a cautious user.
 
-**Scope consequence:** creating drafts requires **`Mail.ReadWrite`** (verified, delegated, personal and work/school), replacing `Mail.Read`. Every existing user re-consents once on next sign-in; `--readonly` drops back to `Mail.Read` and hides the draft tools from `tools/list` for users who want read-only.
+**Scope consequence:** creating drafts requires **`Mail.ReadWrite`** (verified, delegated, personal and work/school), replacing `Mail.Read`. Every existing user re-consents once on next sign-in; `OUTLOOK_MCP_READONLY=1` drops back to `Mail.Read` and hides the draft tools from `tools/list` for users who want read-only.
+
+**Read-only is an environment switch, deliberately, with no `--readonly` flag.** A per-command flag can disagree with itself: set on `serve` but not on `login` and the cached token carries `Mail.ReadWrite` while the process advertises a read-only surface, or the reverse, where login mints a `Mail.Read` token and every draft call then fails. One environment variable fixed before any command runs makes the scope set and the advertised tool set unable to diverge, and every client in our matrix can set `env` anyway. The effective mode and scopes are reported by `auth_status` and logged to stderr at serve start, so a missing draft tool is never a mystery.
 
 Cross-cutting:
 
@@ -207,7 +209,7 @@ Public client, no secret, `0700`/`0600` cache with atomic writes, no telemetry, 
 
 **Phase 2 — MCP server (1 day).** `tools.ts` registry + `mcp.ts` (read tools, auth tools, resources, instructions, stdout guard), `isError` remediation, structured output, `bin`. Acceptance: `npx @modelcontextprotocol/inspector --cli node dist/index.js --method tools/list` lists every tool; in-memory `Client` tests cover happy path, auth-required path, argument validation; spawned-stdio test asserts the `initialize` handshake **and** byte-exact stdout purity; a 30 KB body stays inside the text budget.
 
-**Phase 3 — drafts (1 day).** Create/reply/forward/update/list/delete + `add_attachment` with the 3 MB guard; `--readonly`; scope bump to `Mail.ReadWrite`; **no-send invariant tests**. Acceptance: a draft created by a test fake appears with the right recipients/subject, an over-limit or disallowed recipient fails with a clear message and no partial write, and the invariant tests pass.
+**Phase 3 — drafts (1 day).** Create/reply/forward/update/list/delete + `add_attachment` with the 3 MB guard; `OUTLOOK_MCP_READONLY`; scope bump to `Mail.ReadWrite`; **no-send invariant tests**. Acceptance: a draft created by a test fake appears with the right recipients/subject, an over-limit or disallowed recipient fails with a clear message and no partial write, and the invariant tests pass.
 
 **Phase 4 — distribution (1 day).** `config <client> [--write]`; README rewritten MCP-first with the skill section kept; `skills/` move + `npx skills add .` verified; `docs/clients.md` verified for real on Pi, Claude Code, Codex, and VS Code; CI job that runs `npm pack` and asserts the artefact contains `dist/` plus a `package.json` with `name` and `version`, so a wrong release asset cannot ship; SECURITY.md, CHANGELOG.md, migration note for the old `scripts/outlook.ts` path.
 
@@ -225,7 +227,7 @@ Total ≈ 5 working days.
 | stdout contamination corrupts JSON-RPC                                                            | stdout→stderr redirect in serve mode + byte-level e2e test.                                                                                     |
 | Concurrent clients corrupt the shared token cache                                                 | Atomic temp+rename write, re-read-and-retry on refresh failure.                                                                                 |
 | Read + draft lets hostile mail steer draft content                                                | Human must click Send before anything leaves the mailbox, client confirmation annotations, SKILL.md rules, draft readback in every result (§9). |
-| Scope bump to `Mail.ReadWrite` surprises existing users                                           | Documented in README + CHANGELOG, one-time re-consent, `--readonly` escape hatch.                                                               |
+| Scope bump to `Mail.ReadWrite` surprises existing users                                           | Documented in README + CHANGELOG, one-time re-consent, `OUTLOOK_MCP_READONLY` escape hatch.                                                               |
 | Base64 attachments exhaust context                                                                | Metadata-only by default, explicit capped download.                                                                                             |
 | 3 MB Graph attachment limit hit silently                                                          | Hard input validation with an actionable error; upload sessions in backlog.                                                                     |
 | `webLink` is unreliable for personal outlook.com accounts (reported on Microsoft Q&A)             | Return it opportunistically; SKILL.md tells the human to open Drafts instead.                                                                   |
