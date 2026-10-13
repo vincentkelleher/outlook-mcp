@@ -50,7 +50,7 @@ outlook-skill/
 └── e2e/                     # spawned stdio JSON-RPC + CLI assertions
 ```
 
-`bin: { "outlook-mcp": "dist/index.js" }` with a `#!/usr/bin/env node` shebang. **Launching with no arguments serves MCP over stdio**, so the config shape every client understands works, while `outlook-mcp login` still works for humans. A thin `scripts/outlook.ts` shim re-exporting the CLI is kept for one release so anyone who copied the old command keeps working.
+`bin: { "outlook-mcp": "dist/index.js" }` with a `#!/usr/bin/env node` shebang. **Launching with no arguments serves MCP over stdio**, so the config shape every client understands works, while `outlook-mcp login` still works for humans. No `scripts/outlook.ts` compatibility shim is kept: the repository is three commits old, the skill and README are rewritten in the same change, and dead back-compat code is not worth carrying.
 
 ## 3. Node-only toolchain
 
@@ -230,5 +230,5 @@ Total ≈ 5 working days.
 | GitHub-only means no registry semver/resolution                                                   | Tag releases, pin `#v1.0.0` in configs, ship release tarballs.                                                                                  |
 | Cold `npx github:` install exceeds MCP startup patience                                           | Recommend clone+build as the default path; release tarball as the fast option.                                                                  |
 | Pi defaults MCP tools to `codemode` (not declared to the model)                                   | Document `"exposure": "direct"` for a server this small.                                                                                        |
-| Existing skill users break when root `SKILL.md` moves                                             | Keep `name: outlook-skill`, shim `scripts/outlook.ts` for one release, migration note.                                                          |
+| Existing skill users break when root `SKILL.md` moves                                             | Keep `name: outlook-skill`; migration note in README and CHANGELOG. No command shim, by decision.                                               |
 | Graph quirks (`$search` needs `ConsistencyLevel`, `$top` ≤ 1000, `$search` + `$filter` conflicts) | Encode limits in schemas, document, unit-test request shapes as the suite does today.                                                           |
