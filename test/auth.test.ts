@@ -44,7 +44,8 @@ type Calls = {
 
 function fakeMsal(behaviour: {
   accounts: MsalAccount[][];
-  silent?: (account: MsalAccount) => Promise<MsalResult>;
+  /** Given the scopes this process asks for, so a narrow grant can be replayed. */
+  silent?: (account: MsalAccount, scopes: string[]) => Promise<MsalResult>;
   device?: () => Promise<MsalResult | null>;
 }) {
   const calls: Calls = {
@@ -69,7 +70,7 @@ function fakeMsal(behaviour: {
     async acquireTokenSilent({ account, scopes }): Promise<MsalResult> {
       calls.silent.push(account);
       calls.scopes.push(scopes);
-      if (behaviour.silent) return behaviour.silent(account);
+      if (behaviour.silent) return behaviour.silent(account, scopes);
       return { accessToken: "silent-token" };
     },
     async acquireTokenByDeviceCode({
@@ -225,6 +226,109 @@ test("an exhausted retry reports the expired session", async () => {
   assert.equal(calls.silent.length, 2);
   assert.equal(calls.accountReads, 2);
   assert.equal(calls.device, 0);
+});
+
+test("a grant that is merely too narrow is reported as needing re-authorisation", async () => {
+  const { calls, factory } = fakeMsal({
+    accounts: [[{ username: "someone@example.com" }]],
+    silent: async (_account, scopes) => {
+      if (scopes.includes("Mail.ReadWrite"))
+        throw new Error(
+          "AADSTS65001: The user has not requested the applicable OAuth scopes.",
+        );
+      return { accessToken: "readonly-token" };
+    },
+  });
+
+  await assert.rejects(
+    createAuth({ config: testConfig(), msal: factory }).accessToken(),
+    (error: unknown) => {
+      assert.ok(error instanceof AuthRequiredError);
+      assert.match(error.message, /needs re-authorisation/);
+      // The permissions wanted are named, because that is the whole diagnosis.
+      assert.match(error.message, /Mail\.ReadWrite/);
+      assert.match(error.message, /AADSTS65001/);
+      assert.equal(
+        error.message.toLowerCase().includes("expired"),
+        false,
+        "a session that is too narrow is not an expired one",
+      );
+      return true;
+    },
+  );
+  assert.equal(calls.device, 0);
+});
+
+test("auth status asks for a token, because a cached account is not a session", async () => {
+  const home = tempDir();
+  const account = { username: "someone@example.com" };
+  // What a mailbox signed in before `Mail.Read` became `Mail.ReadWrite` really
+  // looks like: the account is cached, a silent token for the wider scope is
+  // refused, and a status that read only the account called that signed in - so
+  // login said "already signed in", the call that needed the scope failed
+  // again, and the agent looped.
+  const { calls, factory } = fakeMsal({
+    accounts: [[account]],
+    silent: async (_account, scopes) => {
+      if (scopes.includes("Mail.ReadWrite"))
+        throw new Error(
+          "AADSTS65001: The user has not requested the applicable OAuth scopes.",
+        );
+      return { accessToken: "readonly-token" };
+    },
+  });
+  const drafts = loadConfig({ HOME: home, OUTLOOK_OAUTH_CLIENT_ID: clientId });
+  const readonly = loadConfig({
+    HOME: home,
+    OUTLOOK_OAUTH_CLIENT_ID: clientId,
+    OUTLOOK_MCP_READONLY: "1",
+  });
+
+  assert.deepEqual(
+    await createAuth({ config: drafts, msal: factory }).authStatus(),
+    {
+      signedIn: false,
+      account: "someone@example.com",
+      reason: "needsConsent",
+      authority: consumers,
+      cachePath: drafts.cachePath,
+    },
+  );
+
+  // The same account against the scope it does hold is a session after all, so
+  // the answer comes from the token, not from a guess.
+  assert.deepEqual(
+    await createAuth({ config: readonly, msal: factory }).authStatus(),
+    {
+      signedIn: true,
+      account: "someone@example.com",
+      authority: consumers,
+      cachePath: readonly.cachePath,
+    },
+  );
+  assert.deepEqual(calls.scopes, [
+    ["User.Read", "Mail.ReadWrite", "email", "profile"],
+    ["User.Read", "Mail.Read", "email", "profile"],
+  ]);
+});
+
+test("auth status calls a refresh that expired what it is", async () => {
+  const { factory } = fakeMsal({
+    accounts: [[{ username: "someone@example.com" }]],
+    silent: async () => {
+      throw new Error(
+        "AADSTS700082: The refresh token has been due to inactivity.",
+      );
+    },
+  });
+
+  const status = await createAuth({
+    config: testConfig(),
+    msal: factory,
+  }).authStatus();
+  assert.equal(status.signedIn, false);
+  assert.equal(status.reason, "expired");
+  assert.equal(status.account, "someone@example.com");
 });
 
 test("interactive login falls back to the device code flow", async () => {

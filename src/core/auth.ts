@@ -15,8 +15,9 @@ import { loadConfig, scopesFor } from "./config.ts";
 import type { Config } from "./config.ts";
 import {
   AuthRequiredError,
-  expiredSessionMessage,
+  isSessionExpiry,
   noSessionMessage,
+  sessionProblemMessage,
 } from "./errors.ts";
 
 export type MsalAccount = { username?: string };
@@ -45,9 +46,14 @@ export type MsalApplication = {
 
 export type MsalFactory = (config: Config) => MsalApplication;
 
+/** Why an account that exists cannot be used as it stands. */
+export type AuthProblem = "needsConsent" | "expired";
+
 export type AuthStatus = {
   signedIn: boolean;
   account: string | undefined;
+  /** Only set when an account is present but unusable. */
+  reason?: AuthProblem;
   authority: string;
   cachePath: string;
 };
@@ -135,7 +141,7 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
           }
         }
         const reason = error instanceof Error ? error.message : String(error);
-        throw new AuthRequiredError(expiredSessionMessage(reason), {
+        throw new AuthRequiredError(sessionProblemMessage(reason, scopes), {
           cause: error,
         });
       }
@@ -155,14 +161,40 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
     return token(result);
   }
 
+  /**
+   * An account in the cache is not yet a session: the grant behind it can be
+   * narrower than the scopes this process asks for - a mailbox signed in before
+   * drafts existed is signed in for `Mail.Read` - and then every call that needs
+   * one fails while status claims the user is signed in, so the agent is sent
+   * round in circles. Status therefore asks the same question a call would, and
+   * reports signed in only when a token really comes back.
+   */
   async function authStatus(): Promise<AuthStatus> {
-    const account = await firstAccount();
-    return {
-      signedIn: Boolean(account),
-      account: account?.username,
+    const base = {
       authority: config.authority,
       cachePath: config.cachePath,
     };
+    const account = await firstAccount();
+    if (!account)
+      return {
+        signedIn: false,
+        account: undefined,
+        ...base,
+      };
+    try {
+      await silent(account);
+      return { signedIn: true, account: account.username, ...base };
+    } catch (error) {
+      // A silent failure that is not expiry means the grant has to be widened,
+      // which only a fresh consent flow can do.
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        signedIn: false,
+        account: account.username,
+        reason: isSessionExpiry(reason) ? "expired" : "needsConsent",
+        ...base,
+      };
+    }
   }
 
   return { accessToken, authStatus, config };

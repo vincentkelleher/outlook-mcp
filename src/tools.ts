@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { createAuth, logout } from "./core/auth.ts";
@@ -120,7 +120,11 @@ function metadataOf(attachment: GraphAttachment) {
   };
 }
 
-/** A Graph file name is user data: only its final segment may reach the disk. */
+/**
+ * A Graph file name is sender data: only its final segment may reach the disk.
+ * Separators are gone by construction, and a name that is empty or only dots has
+ * nothing to be called, so it gets a placeholder rather than a relative path.
+ */
 function safeFileName(value: string | undefined): string {
   const leaf = (value ?? "").split(/[\\/]/).pop() ?? "";
   const cleaned = leaf
@@ -131,15 +135,17 @@ function safeFileName(value: string | undefined): string {
 }
 
 /**
- * Attachments may only land inside the configured attachment directory, so a
- * caller-supplied `dir` is resolved against it and checked - symlinks included
- * - before a single byte is written.
+ * Attachments may only land inside the configured attachment directory, so both
+ * halves of the path are checked: a caller-supplied `dir` is resolved against it,
+ * the sender's file name is reduced to one leaf, and the final path is verified
+ * resolved and real - so neither `..` in a name nor a symlink waiting inside the
+ * directory can write outside - before a single byte is written.
  */
 function attachmentPath(
   config: Config,
   dir: string | undefined,
-  fileName: string,
-): string {
+  rawName: string,
+): { path: string; name: string } {
   const base = resolve(config.attachmentDir);
   const inside = (path: string, root: string) =>
     path === root || path.startsWith(root + sep);
@@ -156,7 +162,30 @@ function attachmentPath(
     throw new Error(
       `dir must be inside the attachment directory ${realBase}, not ${realTarget}.`,
     );
-  return join(target, fileName);
+  const name = safeFileName(rawName);
+  const path = join(target, name);
+  // The name is sender data, so its destination is verified rather than trusted:
+  // no added segment, and nothing already waiting at that name may lead outside -
+  // a symlink there would carry the write with it, dangling or not. Where nothing
+  // exists yet, the directory's own real path answers for the file.
+  if (!inside(path, target))
+    throw new Error(
+      `${name} would be written outside the attachment directory ${base}, not at ${path}.`,
+    );
+  // A link at the destination goes wherever its author chose, and `realpath`
+  // cannot even resolve a dangling one, so no link is written through at all.
+  const waiting = lstatSync(path, { throwIfNoEntry: false });
+  if (waiting?.isSymbolicLink())
+    throw new Error(
+      `${name} is already a symlink, so writing it could land outside the attachment directory ${realBase}.`,
+    );
+  const real =
+    waiting === undefined ? join(realTarget, name) : realpathSync(path);
+  if (!inside(real, realBase))
+    throw new Error(
+      `${name} would be written outside the attachment directory ${realBase}, not at ${real}.`,
+    );
+  return { path, name };
 }
 
 const coreTools: Tool[] = [
@@ -281,8 +310,13 @@ const coreTools: Tool[] = [
         messageId,
         attachmentId,
       )) as GraphAttachment;
-      const name = safeFileName(attachment.name ?? attachmentId);
-      const path = attachmentPath(deps.config, dir, name);
+      // The name is the sender's, so it goes into `attachmentPath` raw and what
+      // comes back is the one name that is safe to write and to report.
+      const { name, path } = attachmentPath(
+        deps.config,
+        dir,
+        attachment.name ?? attachmentId,
+      );
       const bytes = Buffer.from(attachment.contentBytes ?? "", "base64");
       writeFileSync(path, bytes, { mode: 0o600 });
       const inline =
@@ -305,7 +339,7 @@ const coreTools: Tool[] = [
     name: "auth_status",
     title: "Sign-in status",
     description:
-      "Report the Outlook session: { signedIn, account, authority, cachePath, readonly, scopes, lastLoginError }. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when drafts are offered, Mail.Read in readonly mode, where no draft tool is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. Cheap and idempotent: call it repeatedly to poll after login.",
+      "Report the Outlook session: { signedIn, account, reason, authority, cachePath, readonly, scopes, lastLoginError, signInPending, verificationUri, userCode, expiresAt }. signedIn is true only when a token can actually be obtained for the scopes below, so an account cached under a narrower grant reports signedIn false with reason needsConsent, and an expired one reports reason expired - either way login starts a fresh sign-in. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when drafts are offered, Mail.Read in readonly mode, where no draft tool is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. While a sign-in flow is open signInPending is true and this carries the verificationUri and userCode to show the user, with expiresAt, so the code is found here even when another client started the flow. Cheap and idempotent: call it repeatedly to poll after login.",
     annotations: read,
     inputSchema: noArguments,
     handler: async (deps) => {
@@ -318,6 +352,16 @@ const coreTools: Tool[] = [
         readonly: deps.config.readonly,
         scopes: scopesFor(deps.config.readonly),
         lastLoginError: state?.state === "error" ? state.message : undefined,
+        // The code belongs to the flow, not to whoever called login, so this is
+        // where a polling agent finds it.
+        ...(state?.state === "pending"
+          ? {
+              signInPending: true,
+              verificationUri: state.verificationUri,
+              userCode: state.userCode,
+              expiresAt: state.expiresAt,
+            }
+          : {}),
       };
     },
   }),
@@ -325,7 +369,7 @@ const coreTools: Tool[] = [
     name: "login",
     title: "Sign in",
     description:
-      "Start signing in and return immediately. Microsoft's device-code flow can take minutes while the user approves it, so this never waits: it returns a verificationUri and userCode to show the user, then the agent polls auth_status until signedIn is true and retries whatever failed. If a session already exists it says so and starts nothing.",
+      "Start signing in and return immediately. Microsoft's device-code flow can take minutes while the user approves it, so this never waits: it returns a verificationUri and userCode to show the user, then the agent polls auth_status until signedIn is true and retries whatever failed. If a usable session already exists it says so and starts nothing; if the cached account's grant is too narrow for the scopes auth_status reports, reason is needsConsent and this does start a flow, because re-consent is the only way to widen it. While a flow is already open it returns that flow's code instead of starting a competing one.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,

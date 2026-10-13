@@ -75,6 +75,44 @@ const draftFields = `${messageFields},isDraft,webLink,toRecipients`;
 const folderFields = "id,displayName,totalItemCount,unreadItemCount";
 const folderPattern = /^[A-Za-z0-9][A-Za-z0-9 ._@-]*$/;
 
+/** The Graph host this client talks to. A cursor may name no other. */
+const graphHost = "graph.microsoft.com";
+
+/**
+ * The page paths Graph issues a nextLink from, as the SDK versions them. A
+ * cursor that points anywhere else was not issued by a page read here.
+ */
+const graphPagePath = /^\/v1\.0\/me\/(?:mailFolders\/[^/]+\/)?messages$/;
+
+/**
+ * A cursor comes back from the model, not from Graph, and an absolute URL given
+ * to `client.api` is fetched as it stands - carrying the user's Microsoft bearer
+ * token - to whatever host it names. So a cursor is accepted only as a URL Graph
+ * itself could have issued: https, our host, no port, no credentials, a page
+ * path under `/me`. A genuine nextLink passes through untouched.
+ */
+function assertGraphCursor(cursor: string): string {
+  let link: URL | undefined;
+  try {
+    link = new URL(cursor);
+  } catch {
+    link = undefined;
+  }
+  const issued =
+    link !== undefined &&
+    link.protocol === "https:" &&
+    link.hostname === graphHost &&
+    link.port === "" &&
+    link.username === "" &&
+    link.password === "" &&
+    graphPagePath.test(link.pathname);
+  if (!issued)
+    throw new Error(
+      `cursor must be the nextCursor from an earlier result, an https://${graphHost} address issued by this server, not ${cursor}.`,
+    );
+  return cursor;
+}
+
 function sdkClient(token: TokenProvider): GraphClient {
   return Client.init({
     authProvider: async (done) => {
@@ -155,7 +193,7 @@ export function createGraph(deps: GraphDeps) {
   ) {
     const { folder = "inbox", unread = false, top = 10, cursor } = options;
     // A cursor is a Graph nextLink, which already carries every query option.
-    if (cursor) return page(cursor);
+    if (cursor) return page(assertGraphCursor(cursor));
     return page(messagesPath(folder), (request) => {
       const ordered = request
         .select(messageFields.split(","))
@@ -171,7 +209,7 @@ export function createGraph(deps: GraphDeps) {
     cursor?: string;
   }) {
     const { query, top = 10, cursor } = options;
-    if (cursor) return page(cursor);
+    if (cursor) return page(assertGraphCursor(cursor));
     return page("/me/messages", (request) =>
       request
         .header("ConsistencyLevel", "eventual")
@@ -249,7 +287,7 @@ export function createGraph(deps: GraphDeps) {
 
   async function listDrafts(options: { top?: number; cursor?: string } = {}) {
     const { top = 10, cursor } = options;
-    if (cursor) return page(cursor);
+    if (cursor) return page(assertGraphCursor(cursor));
     return page(messagesPath("drafts"), (request) =>
       request
         .select(draftFields.split(","))

@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -77,6 +84,19 @@ const storedDraft = {
 const addressed = (list: string[] | undefined) =>
   list?.map((address) => ({ emailAddress: { address } }));
 
+/**
+ * File names as a sender can send them: traversal, a Windows separator, a name
+ * that is nothing but dots, and one ordinary name.
+ */
+const sentNames: Record<string, string> = {
+  "attachment-1": "../escape/note.txt",
+  oversized: "quarterly.pdf",
+  traversal: "../../../../tmp/stolen.txt",
+  backslash: "..\\..\\..\\tmp\\stolen.txt",
+  dots: "....",
+  plain: "quarterly report.pdf",
+};
+
 function fakeDeps(
   config: Config,
   options: { signedIn?: boolean; session?: boolean } = {},
@@ -147,8 +167,8 @@ function fakeDeps(
       calls.download.push([messageId, attachmentId]);
       return {
         id: attachmentId,
-        // A Graph file name is user data, including this traversal attempt.
-        name: "../escape/note.txt",
+        // A Graph file name is user data, whoever sent it.
+        name: sentNames[attachmentId] ?? "note.txt",
         contentType: "text/plain",
         contentBytes:
           attachmentId === "oversized"
@@ -569,6 +589,62 @@ test("download_attachment writes inside the allowed directory only", async (t) =
   );
 });
 
+test("an attachment name from the sender cannot lead the write out of the directory", async (t) => {
+  const config = testConfig(t);
+  const { deps } = fakeDeps(config);
+  const client = await connect(t, deps);
+
+  // The name is the sender's file name, so it is reduced to one leaf and the
+  // destination is verified: traversal, separators and dot-only names stay put.
+  for (const [attachmentId, leaf] of [
+    ["traversal", "stolen.txt"],
+    ["backslash", "stolen.txt"],
+    ["dots", "attachment"],
+    ["plain", "quarterly report.pdf"],
+  ] as const) {
+    const result = await call(client, "download_attachment", {
+      messageId: "message-1",
+      attachmentId,
+    });
+    assert.equal(result.isError, undefined, textOf(result));
+    const payload = JSON.parse(textOf(result));
+    assert.equal(payload.name, leaf, `${attachmentId} kept a dangerous name`);
+    assert.equal(payload.path, join(config.attachmentDir, leaf));
+    assert.equal(readFileSync(payload.path, "utf8"), "hello");
+  }
+  assert.deepEqual(readdirSync(config.attachmentDir).sort(), [
+    "attachment",
+    "quarterly report.pdf",
+    "stolen.txt",
+  ]);
+  assert.equal(
+    existsSync(join(config.attachmentDir, "..", "stolen.txt")),
+    false,
+    "a name walked out of the attachment directory",
+  );
+
+  // And a symlink already waiting at that destination would carry the write with
+  // it, so nothing is written through one either.
+  const outside = mkdtempSync(join(tmpdir(), "outlook-mcp-outside-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  symlinkSync(
+    join(outside, "note.txt"),
+    join(config.attachmentDir, "note.txt"),
+  );
+
+  const refused = await call(client, "download_attachment", {
+    messageId: "message-1",
+    attachmentId: "attachment-1",
+  });
+  assert.equal(refused.isError, true);
+  assert.match(textOf(refused), /outside the attachment directory/);
+  assert.equal(
+    existsSync(join(outside, "note.txt")),
+    false,
+    "the write followed the symlink",
+  );
+});
+
 test("create_draft writes what it is given and reads back the stored draft", async (t) => {
   const { deps, calls } = fakeDeps(testConfig(t));
   const client = await connect(t, deps);
@@ -801,6 +877,72 @@ test("auth_status reports the session and the last sign-in failure", async (t) =
   );
 });
 
+test("auth_status carries the code of a sign-in that is still open", async (t) => {
+  const config = testConfig(t);
+  const { deps } = fakeDeps(config);
+  const client = await connect(t, deps);
+
+  // The code belongs to the flow, not to whoever called login, so an agent told
+  // to poll auth_status has to be able to find it here.
+  writeLoginState(config, {
+    state: "pending",
+    verificationUri: "https://microsoft.com/devicelogin",
+    userCode: "ABC-XYZ",
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  const open = JSON.parse(textOf(await call(client, "auth_status")));
+  assert.equal(open.signInPending, true);
+  assert.equal(open.verificationUri, "https://microsoft.com/devicelogin");
+  assert.equal(open.userCode, "ABC-XYZ");
+  assert.equal(open.expiresAt, "2030-01-01T00:00:00.000Z");
+  assert.equal(open.lastLoginError, undefined);
+
+  // Past its own deadline nobody is polling Microsoft any more, so the code is
+  // not offered, and a flow that is not happening is not reported as one.
+  writeLoginState(config, {
+    state: "pending",
+    userCode: "DEAD-CODE",
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+  const dead = JSON.parse(textOf(await call(client, "auth_status")));
+  assert.equal(
+    dead.signInPending,
+    undefined,
+    "a dead code is still advertised",
+  );
+  assert.equal(dead.userCode, undefined);
+  assert.equal(dead.signedIn, true);
+
+  writeLoginState(config, { state: "authorized" });
+  assert.equal(
+    JSON.parse(textOf(await call(client, "auth_status"))).signInPending,
+    undefined,
+  );
+});
+
+test("auth_status reports why an account that exists cannot be used", async (t) => {
+  const config = testConfig(t);
+  const { deps } = fakeDeps(config);
+  deps.authStatus = async () => ({
+    signedIn: false,
+    account: "someone@example.com",
+    reason: "needsConsent",
+    authority: config.authority,
+    cachePath: config.cachePath,
+  });
+  const client = await connect(t, deps);
+
+  const reported = JSON.parse(textOf(await call(client, "auth_status")));
+  assert.equal(reported.signedIn, false);
+  assert.equal(reported.reason, "needsConsent");
+  assert.deepEqual(reported.scopes, [
+    "User.Read",
+    "Mail.ReadWrite",
+    "email",
+    "profile",
+  ]);
+});
+
 test("login hands back the code without waiting, and never restarts a session", async (t) => {
   const config = testConfig(t);
   const { deps, calls } = fakeDeps(config, { signedIn: false });
@@ -825,6 +967,41 @@ test("login hands back the code without waiting, and never restarts a session", 
   assert.equal(answer.state, "authorized");
   assert.equal(answer.account, "someone@example.com");
   assert.equal(existing.calls.loginStarts, 0);
+});
+
+test("login starts a flow when the cached grant is too narrow", async (t) => {
+  const config = testConfig(t);
+  const { deps, calls } = fakeDeps(config);
+  // An account is present, which is exactly the state that used to be answered
+  // with "already signed in" while every scoped call kept failing.
+  deps.authStatus = async () => ({
+    signedIn: false,
+    account: "someone@example.com",
+    reason: "needsConsent",
+    authority: config.authority,
+    cachePath: config.cachePath,
+  });
+  const client = await connect(t, deps);
+
+  const launch = JSON.parse(textOf(await call(client, "login")));
+
+  assert.equal(calls.loginStarts, 1, "re-consent was short-circuited");
+  assert.equal(launch.state, "pending");
+  assert.equal(launch.userCode, "ABC-XYZ");
+  assert.match(launch.instructions, /ABC-XYZ/);
+});
+
+test("a usable token means login starts no flow", async (t) => {
+  const config = testConfig(t);
+  const { deps, calls } = fakeDeps(config, { signedIn: true });
+  const client = await connect(t, deps);
+
+  const answer = JSON.parse(textOf(await call(client, "login")));
+
+  // A token that works is the only reason not to start a flow.
+  assert.equal(answer.state, "authorized");
+  assert.equal(answer.account, "someone@example.com");
+  assert.equal(calls.loginStarts, 0);
 });
 
 test("logout deletes the saved session and says so", async (t) => {

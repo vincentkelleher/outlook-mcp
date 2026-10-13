@@ -198,7 +198,10 @@ test("search escapes the phrase and requests eventual consistency", async () => 
 });
 
 test("a nextLink becomes an opaque cursor that replays the query", async () => {
-  const cursor = "/me/mailFolders/inbox/messages?$skiptoken=abc";
+  // The shape Graph really issues: an absolute https link, versioned, with an
+  // opaque token that must reach it byte for byte.
+  const cursor =
+    "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=HQE,AAAAIiVFAAA%3d&$d=2y";
   const { graph, requests } = graphFor((path) =>
     path === cursor
       ? { value: ["second"] }
@@ -222,7 +225,8 @@ test("a nextLink becomes an opaque cursor that replays the query", async () => {
   assert.equal(replay.search, undefined);
   assert.deepEqual(replay.headers, []);
 
-  const searchCursor = "/me/messages?$skiptoken=search";
+  const searchCursor =
+    "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=search";
   const searched = await graph.searchMessages({
     query: "ignored",
     top: 50,
@@ -304,7 +308,8 @@ test("list_drafts reads the drafts folder newest first", async () => {
 });
 
 test("list_drafts replays a cursor instead of rebuilding the query", async () => {
-  const cursor = "/me/mailFolders/drafts/messages?$skiptoken=drafts";
+  const cursor =
+    "https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages?$skiptoken=drafts";
   const { graph, requests } = graphFor((path) =>
     path === cursor
       ? { value: [{ id: "draft-2" }] }
@@ -319,6 +324,42 @@ test("list_drafts replays a cursor instead of rebuilding the query", async () =>
   assert.equal(requests[1].path, cursor);
   assert.equal(requests[1].select, undefined);
   assert.equal(requests[1].top, undefined);
+});
+
+test("a cursor that is not a Graph page link never becomes a request", async () => {
+  // A cursor arrives from the model, and an absolute URL given to the SDK is
+  // fetched as it stands, bearer token included. So nothing here may reach
+  // Graph until the link is one Graph could have issued for these pages.
+  const hostile = [
+    "https://evil.example/v1.0/me/messages",
+    "http://graph.microsoft.com/v1.0/me/messages",
+    "https://graph.microsoft.com:8443/v1.0/me/messages",
+    "https://graph.microsoft.com@evil.example/v1.0/me/messages",
+    "https://evil.example/#https://graph.microsoft.com/v1.0/me/messages",
+    "https://graph.microsoft.com/v1.0/users/anyone/messages",
+    "https://graph.microsoft.com/v1.0/me/messages/../../tenantAdmin",
+    "https://graph.microsoft.com\\evil.example/v1.0/me/messages",
+    "/me/messages?$skiptoken=abc",
+    "me/messages",
+    "javascript:fetch('//evil.example')",
+  ];
+
+  for (const cursor of hostile) {
+    const { graph, requests } = graphFor();
+    const reads = [
+      () => graph.listMessages({ cursor }),
+      () => graph.searchMessages({ query: "invoice", cursor }),
+      () => graph.listDrafts({ cursor }),
+    ];
+    for (const read of reads) {
+      await assert.rejects(
+        read(),
+        /cursor must be the nextCursor from an earlier result/,
+        `${cursor || "an empty cursor"} was accepted`,
+      );
+    }
+    assert.deepEqual(requests, [], `${cursor} reached Graph`);
+  }
 });
 
 test("delete_draft deletes that one message", async () => {
