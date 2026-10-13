@@ -11,15 +11,13 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PublicClientApplication } from "@azure/msal-node";
 import type { ICachePlugin } from "@azure/msal-node";
-import { loadConfig, loadEnvFile } from "./config.ts";
+import { loadConfig, loadEnvFile, scopesFor } from "./config.ts";
 import type { Config, Env } from "./config.ts";
 import {
   AuthRequiredError,
   expiredSessionMessage,
   noSessionMessage,
 } from "./errors.ts";
-
-const scopes = ["User.Read", "Mail.Read", "email", "profile"];
 
 export type MsalAccount = { username?: string };
 export type MsalResult = { accessToken?: string };
@@ -95,6 +93,7 @@ export function createMsal(config: Config): MsalApplication {
 
 export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
   const config = deps.config ?? loadConfig();
+  const scopes = scopesFor(config.readonly);
   const newMsal = deps.msal ?? createMsal;
   let application: MsalApplication | undefined;
   const msal = () => (application ??= newMsal(config));

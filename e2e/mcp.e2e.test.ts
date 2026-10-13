@@ -9,7 +9,10 @@ import { test } from "node:test";
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const binArgs = (process.env.OUTLOOK_E2E_BIN ?? "src/index.ts").split(" ");
 const placeholderClientId = "00000000-0000-0000-0000-000000000000";
-const toolNames = [
+// An env var, never a flag: one process cannot disagree with itself about
+// whether it may write, and login and serve must ask Microsoft for the same
+// permissions. Nothing here may set it per command.
+const readToolNames = [
   "auth_status",
   "download_attachment",
   "get_email",
@@ -18,6 +21,15 @@ const toolNames = [
   "login",
   "logout",
   "search_emails",
+];
+const draftToolNames = [
+  "add_attachment",
+  "create_draft",
+  "create_forward_draft",
+  "create_reply_draft",
+  "delete_draft",
+  "list_drafts",
+  "update_draft",
 ];
 
 type Frame = {
@@ -37,7 +49,7 @@ type Frame = {
  * Serves the entry module over real stdio pipes and records every raw byte it
  * writes, because a single stray byte on stdout corrupts JSON-RPC.
  */
-function startServer(home: string) {
+function startServer(home: string, env: Record<string, string> = {}) {
   const child = spawn(process.execPath, binArgs, {
     cwd: repo,
     env: {
@@ -46,6 +58,9 @@ function startServer(home: string) {
       OUTLOOK_OAUTH_CLIENT_ID: placeholderClientId,
       OUTLOOK_MCP_STATE_DIR: join(home, "state"),
       OUTLOOK_MCP_ATTACHMENT_DIR: join(home, "attachments"),
+      // The mode is set here or not at all, never inherited from the shell.
+      OUTLOOK_MCP_READONLY: "",
+      ...env,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -135,7 +150,7 @@ test("no arguments serves MCP over stdio with only newline-delimited JSON on std
   const listed = await server.request(2, "tools/list");
   assert.deepEqual(
     listed.result?.tools?.map((tool) => tool.name).sort(),
-    toolNames,
+    [...readToolNames, ...draftToolNames].sort(),
   );
 
   const status = await server.request(3, "tools/call", {
@@ -170,4 +185,51 @@ test("no arguments serves MCP over stdio with only newline-delimited JSON on std
   assert.equal(text.includes("\u0000"), false);
   // stderr is where anything chatty belongs, so it is deliberately unchecked.
   assert.equal(server.lines.length, 3);
+});
+
+test("read-only mode serves only the read tools and says so on stderr", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-e2e-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const server = startServer(home, { OUTLOOK_MCP_READONLY: "1" });
+  t.after(() => server.child.kill());
+
+  const initialized = await server.request(1, "initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "outlook-e2e", version: "0.0.0" },
+  });
+  assert.match(initialized.result?.instructions ?? "", /readonly mode/);
+  server.notify("notifications/initialized");
+
+  const listed = await server.request(2, "tools/list");
+  const names = listed.result?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(names.sort(), [...readToolNames].sort());
+  for (const draft of draftToolNames)
+    assert.equal(names.includes(draft), false, `${draft} is advertised`);
+
+  // The session reports the mode and the permissions behind it, so an agent
+  // that cannot find create_draft can see why rather than guess.
+  const status = await server.request(3, "tools/call", {
+    name: "auth_status",
+    arguments: {},
+  });
+  const reported = JSON.parse(status.result?.content?.[0]?.text ?? "{}");
+  assert.equal(reported.readonly, true);
+  assert.deepEqual(reported.scopes, [
+    "User.Read",
+    "Mail.Read",
+    "email",
+    "profile",
+  ]);
+
+  server.child.stdin.end();
+  server.child.kill();
+
+  assert.match(
+    server.stderrText(),
+    /Outlook MCP serving read-only \(User\.Read, Mail\.Read, email, profile\); draft tools disabled/,
+  );
+  // The line went to stderr, so stdout is still nothing but frames.
+  assert.deepEqual(server.notJson, [], "stdout carries only JSON");
+  assert.equal(server.stdoutText().includes("read-only"), false);
 });

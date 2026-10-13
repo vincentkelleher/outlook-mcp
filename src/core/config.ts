@@ -42,6 +42,21 @@ function homeDir(env: Env) {
   return env.HOME || homedir();
 }
 
+/**
+ * Delegated Graph permissions. Creating or changing a message - which is all a
+ * draft is - needs `Mail.ReadWrite`, so a readonly server asks for `Mail.Read`
+ * instead and gets no write tool. The consent prompt shows these names, so they
+ * must match what the code is actually able to do.
+ */
+export function scopesFor(readonly: boolean): string[] {
+  return [
+    "User.Read",
+    readonly ? "Mail.Read" : "Mail.ReadWrite",
+    "email",
+    "profile",
+  ];
+}
+
 function readLogLevel(env: Env): LogLevel {
   const value = env.OUTLOOK_MCP_LOG_LEVEL?.toLowerCase();
   return logLevels.find((level) => level === value) ?? "info";

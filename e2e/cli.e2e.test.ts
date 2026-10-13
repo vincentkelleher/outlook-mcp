@@ -49,6 +49,12 @@ test("CLI exposes every documented command", (t) => {
   assert.match(emails.stdout, /get <id>/);
   assert.match(emails.stdout, /attachments <message-id>/);
   assert.match(emails.stdout, /search \[options\] <query>/);
+  // Drafts are MCP-only on purpose: a human writes them in Outlook, not here.
+  assert.equal(
+    `${root.stdout}${emails.stdout}`.toLowerCase().includes("draft"),
+    false,
+    "the CLI offers no draft command",
+  );
 });
 
 test("logout command removes the saved session", (t) => {

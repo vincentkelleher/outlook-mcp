@@ -11,6 +11,9 @@ export type GraphRequest = {
   filter(value: string): GraphRequest;
   search(value: string): GraphRequest;
   get<T = unknown>(): Promise<T>;
+  post<T = unknown>(body: unknown): Promise<T>;
+  patch<T = unknown>(body: unknown): Promise<T>;
+  delete(): Promise<void>;
 };
 
 export type GraphClient = {
@@ -34,6 +37,30 @@ type GraphCollection = {
   "@odata.nextLink"?: string;
 };
 
+/** What a draft carries. Absent keys are left out of the request, not cleared. */
+export type DraftContent = {
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  body?: string;
+  bodyFormat?: "text" | "html";
+  categories?: string[];
+};
+
+export type AttachmentUpload = {
+  name: string;
+  contentType: string;
+  contentBase64: string;
+};
+
+/**
+ * Graph accepts an attachment in one request only while it stays under 3 MB;
+ * 3-150 MB needs an upload session, which this client does not implement, so
+ * the ceiling is enforced before anything is sent.
+ */
+export const maxAttachmentBytes = 3 * 1024 * 1024;
+
 export type Folder = {
   id: string;
   displayName: string;
@@ -44,6 +71,7 @@ export type Folder = {
 const messageFields =
   "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments";
 const fullMessageFields = `${messageFields},toRecipients,ccRecipients,body`;
+const draftFields = `${messageFields},isDraft,webLink,toRecipients`;
 const folderFields = "id,displayName,totalItemCount,unreadItemCount";
 const folderPattern = /^[A-Za-z0-9][A-Za-z0-9 ._@-]*$/;
 
@@ -57,6 +85,42 @@ function sdkClient(token: TokenProvider): GraphClient {
       }
     },
   }) as unknown as GraphClient;
+}
+
+function messagePath(id: string) {
+  return `/me/messages/${encodeURIComponent(id)}`;
+}
+
+/** Graph takes a recipient as a nested address object, never a bare string. */
+function recipientsOf(addresses: string[] | undefined) {
+  return addresses?.map((address) => ({ emailAddress: { address } }));
+}
+
+/**
+ * Keys with no value are dropped rather than sent as null, so a patch changes
+ * only what it names and a readback claims only what Graph returned.
+ */
+export function withoutUndefined<T extends object>(fields: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
+
+function draftRequestBody(content: DraftContent) {
+  return withoutUndefined({
+    subject: content.subject,
+    body:
+      content.body === undefined
+        ? undefined
+        : {
+            contentType: content.bodyFormat ?? "text",
+            content: content.body,
+          },
+    toRecipients: recipientsOf(content.to),
+    ccRecipients: recipientsOf(content.cc),
+    bccRecipients: recipientsOf(content.bcc),
+    categories: content.categories,
+  });
 }
 
 export function messagesPath(folder = "inbox") {
@@ -119,7 +183,7 @@ export function createGraph(deps: GraphDeps) {
 
   function getMessage(id: string) {
     return client
-      .api(`/me/messages/${encodeURIComponent(id)}`)
+      .api(messagePath(id))
       .header("Prefer", 'outlook.body-content-type="text"')
       .select(fullMessageFields.split(","))
       .get();
@@ -128,7 +192,7 @@ export function createGraph(deps: GraphDeps) {
   function getAttachment(messageId: string, attachmentId: string) {
     return client
       .api(
-        `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        `${messagePath(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
       )
       .get();
   }
@@ -140,7 +204,7 @@ export function createGraph(deps: GraphDeps) {
   }
 
   async function listAttachments(messageId: string) {
-    const path = `/me/messages/${encodeURIComponent(messageId)}/attachments`;
+    const path = `${messagePath(messageId)}/attachments`;
     const collected: { id: string }[] = [];
     let target: string | undefined = path;
     while (target) {
@@ -153,6 +217,66 @@ export function createGraph(deps: GraphDeps) {
     return Promise.all(collected.map(({ id }) => getAttachment(messageId, id)));
   }
 
+  /**
+   * POST /me/messages creates a draft. Graph only transmits on its `send`
+   * action, and nothing in this file calls it, or the `reply` or `forward`
+   * actions - see test/no-send.test.ts.
+   */
+  function createDraft(content: DraftContent) {
+    return client.api("/me/messages").post(draftRequestBody(content));
+  }
+
+  /** The create actions keep the thread and copy in the answered recipients. */
+  function createReplyDraft(messageId: string, comment: string) {
+    return client
+      .api(`${messagePath(messageId)}/createReply`)
+      .post({ comment });
+  }
+
+  function createForwardDraft(
+    messageId: string,
+    to: string[],
+    comment: string,
+  ) {
+    return client
+      .api(`${messagePath(messageId)}/createForward`)
+      .post({ comment, toRecipients: recipientsOf(to) });
+  }
+
+  function updateDraft(messageId: string, patch: DraftContent) {
+    return client.api(messagePath(messageId)).patch(draftRequestBody(patch));
+  }
+
+  async function listDrafts(options: { top?: number; cursor?: string } = {}) {
+    const { top = 10, cursor } = options;
+    if (cursor) return page(cursor);
+    return page(messagesPath("drafts"), (request) =>
+      request
+        .select(draftFields.split(","))
+        .orderby("receivedDateTime desc")
+        .top(top),
+    );
+  }
+
+  function deleteDraft(messageId: string) {
+    return client.api(messagePath(messageId)).delete();
+  }
+
+  /** The decoded size is checked here, so an over-limit file costs no request. */
+  function addAttachment(messageId: string, attachment: AttachmentUpload) {
+    const bytes = Buffer.from(attachment.contentBase64, "base64").byteLength;
+    if (bytes >= maxAttachmentBytes)
+      throw new Error(
+        `${attachment.name} is ${bytes} bytes and a single-request attachment must stay under ${maxAttachmentBytes} bytes (3 MB). Graph needs an upload session from 3 to 150 MB, which this server does not implement, so the draft was not changed.`,
+      );
+    return client.api(`${messagePath(messageId)}/attachments`).post({
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      contentBase64: attachment.contentBase64,
+    });
+  }
+
   return {
     listMessages,
     searchMessages,
@@ -160,6 +284,13 @@ export function createGraph(deps: GraphDeps) {
     listFolders,
     listAttachments,
     getAttachment,
+    createDraft,
+    createReplyDraft,
+    createForwardDraft,
+    updateDraft,
+    listDrafts,
+    deleteDraft,
+    addAttachment,
   };
 }
 

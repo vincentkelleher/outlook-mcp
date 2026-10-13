@@ -39,6 +39,7 @@ const testConfig = (env: Env = {}) =>
 type Calls = {
   accountReads: number;
   silent: MsalAccount[];
+  scopes: string[][];
   device: number;
 };
 
@@ -47,7 +48,12 @@ function fakeMsal(behaviour: {
   silent?: (account: MsalAccount) => Promise<MsalResult>;
   device?: () => Promise<MsalResult | null>;
 }) {
-  const calls: Calls = { accountReads: 0, silent: [], device: 0 };
+  const calls: Calls = {
+    accountReads: 0,
+    silent: [],
+    scopes: [],
+    device: 0,
+  };
   const application: MsalApplication = {
     getTokenCache() {
       return {
@@ -61,15 +67,18 @@ function fakeMsal(behaviour: {
         },
       };
     },
-    async acquireTokenSilent({ account }): Promise<MsalResult> {
+    async acquireTokenSilent({ account, scopes }): Promise<MsalResult> {
       calls.silent.push(account);
+      calls.scopes.push(scopes);
       if (behaviour.silent) return behaviour.silent(account);
       return { accessToken: "silent-token" };
     },
     async acquireTokenByDeviceCode({
+      scopes,
       deviceCodeCallback,
     }): Promise<MsalResult | null> {
       calls.device += 1;
+      calls.scopes.push(scopes);
       deviceCodeCallback({ message: "To sign in, open the verification URL" });
       if (behaviour.device) return behaviour.device();
       return { accessToken: "device-token" };
@@ -318,6 +327,28 @@ test("auth status reports the cached account, authority and cache path", async (
       cachePath: work.cachePath,
     },
   );
+});
+
+test("drafts need Mail.ReadWrite and readonly asks for Mail.Read only", async () => {
+  const account = { username: "someone@example.com" };
+
+  const readWrite = fakeMsal({ accounts: [[account]] });
+  await createAuth({
+    config: testConfig(),
+    msal: readWrite.factory,
+  }).accessToken();
+  assert.deepEqual(readWrite.calls.scopes, [
+    ["User.Read", "Mail.ReadWrite", "email", "profile"],
+  ]);
+
+  const readonly = fakeMsal({ accounts: [[account]] });
+  await createAuth({
+    config: testConfig({ OUTLOOK_MCP_READONLY: "1" }),
+    msal: readonly.factory,
+  }).accessToken();
+  assert.deepEqual(readonly.calls.scopes, [
+    ["User.Read", "Mail.Read", "email", "profile"],
+  ]);
 });
 
 test("logout is safe when the cache is present or absent", () => {

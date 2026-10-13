@@ -36,6 +36,29 @@ function fakeGraph(): { graph: Graph; calls: Calls } {
     async getAttachment(messageId, attachmentId) {
       return { messageId, attachmentId };
     },
+    // The CLI has no draft commands, so any call here would be a surface the
+    // design says does not exist.
+    async createDraft() {
+      throw new Error("the CLI must not create drafts");
+    },
+    async createReplyDraft() {
+      throw new Error("the CLI must not create reply drafts");
+    },
+    async createForwardDraft() {
+      throw new Error("the CLI must not create forward drafts");
+    },
+    async updateDraft() {
+      throw new Error("the CLI must not update drafts");
+    },
+    async listDrafts() {
+      throw new Error("the CLI must not list drafts");
+    },
+    async deleteDraft() {
+      throw new Error("the CLI must not delete drafts");
+    },
+    async addAttachment() {
+      throw new Error("the CLI must not upload attachments");
+    },
   };
   return { graph, calls };
 }

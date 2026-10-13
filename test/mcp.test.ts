@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/mcp.ts";
-import { maxInlineBytes, tools } from "../src/tools.ts";
+import { maxEchoedBodyChars, maxInlineBytes, tools } from "../src/tools.ts";
 import type { ToolDeps } from "../src/tools.ts";
 import { loadConfig } from "../src/core/config.ts";
 import type { Config } from "../src/core/config.ts";
@@ -19,6 +19,12 @@ const readAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
+  openWorldHint: true,
+};
+const writeAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
   openWorldHint: true,
 };
 
@@ -42,11 +48,34 @@ type Calls = {
   folders: number;
   attachments: string[];
   download: [string, string][];
+  created: unknown[];
+  replied: [string, string][];
+  forwarded: [string, string[], string][];
+  patched: [string, unknown][];
+  draftPages: unknown[];
+  deleted: string[];
+  uploaded: [string, unknown][];
   loginStarts: number;
   logouts: string[];
 };
 
 type Fake = { deps: ToolDeps; calls: Calls };
+
+/** What a draft write returns: Graph hands back the message it stored. */
+const storedDraft = {
+  id: "draft-1",
+  subject: "Weekly report",
+  body: { content: "The numbers are in.", contentType: "text" },
+  toRecipients: [{ emailAddress: { address: "ana@example.com", name: "Ana" } }],
+  ccRecipients: [{ emailAddress: { address: "bo@example.com" } }],
+  categories: ["work"],
+  webLink: "https://outlook.office.com/mail/deeplink/compose?id=draft-1",
+  isDraft: true,
+};
+
+/** Graph takes addresses nested; the fake unwraps them the same way. */
+const addressed = (list: string[] | undefined) =>
+  list?.map((address) => ({ emailAddress: { address } }));
 
 function fakeDeps(
   config: Config,
@@ -59,6 +88,13 @@ function fakeDeps(
     folders: 0,
     attachments: [],
     download: [],
+    created: [],
+    replied: [],
+    forwarded: [],
+    patched: [],
+    draftPages: [],
+    deleted: [],
+    uploaded: [],
     loginStarts: 0,
     logouts: [],
   };
@@ -119,6 +155,74 @@ function fakeDeps(
             ? Buffer.alloc(maxInlineBytes + 1, 0x61).toString("base64")
             : "aGVsbG8=",
       };
+    },
+    async createDraft(draft) {
+      guard();
+      calls.created.push(draft);
+      return { ...storedDraft, toRecipients: addressed(draft.to) };
+    },
+    async createReplyDraft(messageId, comment) {
+      guard();
+      calls.replied.push([messageId, comment]);
+      return {
+        ...storedDraft,
+        id: "draft-reply",
+        subject: "RE: Weekly report",
+        body: {
+          content: `${comment}\n\nOriginal message`,
+          contentType: "text",
+        },
+      };
+    },
+    async createForwardDraft(messageId, to, comment) {
+      guard();
+      calls.forwarded.push([messageId, to, comment]);
+      return {
+        ...storedDraft,
+        id: "draft-forward",
+        subject: "FW: Weekly report",
+        toRecipients: addressed(to),
+        ccRecipients: [],
+        body: { content: comment, contentType: "text" },
+      };
+    },
+    async updateDraft(messageId, patch) {
+      guard();
+      calls.patched.push([messageId, patch]);
+      return {
+        ...storedDraft,
+        id: messageId,
+        subject: patch.subject ?? storedDraft.subject,
+        toRecipients: patch.to ? addressed(patch.to) : storedDraft.toRecipients,
+        body:
+          patch.body === undefined
+            ? storedDraft.body
+            : { content: patch.body, contentType: patch.bodyFormat ?? "text" },
+      };
+    },
+    async listDrafts(options = {}) {
+      guard();
+      calls.draftPages.push(options);
+      return {
+        items: [
+          {
+            id: "draft-1",
+            subject: "Weekly report",
+            isDraft: true,
+            toRecipients: storedDraft.toRecipients,
+          },
+        ],
+        nextCursor: "https://graph/next-drafts?skiptoken=1",
+      };
+    },
+    async deleteDraft(messageId) {
+      guard();
+      calls.deleted.push(messageId);
+    },
+    async addAttachment(messageId, attachment) {
+      guard();
+      calls.uploaded.push([messageId, attachment]);
+      return { ...storedDraft, id: messageId };
     },
   };
   const deps: ToolDeps = {
@@ -208,14 +312,21 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
   const listed = await client.listTools();
 
   assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
+    "add_attachment",
     "auth_status",
+    "create_draft",
+    "create_forward_draft",
+    "create_reply_draft",
+    "delete_draft",
     "download_attachment",
     "get_email",
     "list_attachments",
+    "list_drafts",
     "list_emails",
     "login",
     "logout",
     "search_emails",
+    "update_draft",
   ]);
   assert.deepEqual(
     listed.tools.map((tool) => tool.name).sort(),
@@ -244,6 +355,28 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
   const logoutTool = listed.tools.find((tool) => tool.name === "logout");
   assert.equal(logoutTool?.annotations?.destructiveHint, true);
   assert.equal(logoutTool?.annotations?.readOnlyHint, false);
+
+  // The annotations are what make a careful client ask the human first, so they
+  // are asserted on everything that writes a draft.
+  for (const name of [
+    "create_draft",
+    "create_reply_draft",
+    "create_forward_draft",
+    "update_draft",
+    "list_drafts",
+    "add_attachment",
+  ]) {
+    assert.deepEqual(
+      listed.tools.find((tool) => tool.name === name)?.annotations,
+      writeAnnotations,
+      `${name} annotations`,
+    );
+  }
+  const deleteTool = listed.tools.find((tool) => tool.name === "delete_draft");
+  assert.deepEqual(deleteTool?.annotations, {
+    ...writeAnnotations,
+    destructiveHint: true,
+  });
 
   // The advertised bounds and the enforced bounds are the same schema, so a
   // client reading tools/list cannot be told something the server disagrees with.
@@ -436,6 +569,217 @@ test("download_attachment writes inside the allowed directory only", async (t) =
   );
 });
 
+test("create_draft writes what it is given and reads back the stored draft", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const result = await call(client, "create_draft", {
+    to: ["ana@example.com"],
+    cc: ["bo@example.com"],
+    subject: "Weekly report",
+    body: "The numbers are in.",
+    categories: ["work"],
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(calls.created, [
+    {
+      to: ["ana@example.com"],
+      cc: ["bo@example.com"],
+      subject: "Weekly report",
+      body: "The numbers are in.",
+      // text is the default, taken from the schema the client is shown.
+      bodyFormat: "text",
+      categories: ["work"],
+    },
+  ]);
+  const payload = JSON.parse(textOf(result));
+  assert.equal(payload.id, "draft-1");
+  assert.equal(payload.subject, "Weekly report");
+  assert.deepEqual(payload.to, ["ana@example.com"]);
+  assert.deepEqual(payload.cc, ["bo@example.com"]);
+  assert.equal(payload.body, "The numbers are in.");
+  assert.equal(payload.bodyFormat, "text");
+  assert.deepEqual(payload.categories, ["work"]);
+  assert.equal(payload.sent, false);
+  assert.equal(payload.webLink, storedDraft.webLink);
+  assert.match(payload.note, /This is a draft: nothing has been sent/);
+  assert.match(payload.note, /Drafts folder/);
+  assert.deepEqual(result.structuredContent, payload);
+});
+
+test("reply and forward drafts carry the comment and stay threaded", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const reply = await call(client, "create_reply_draft", {
+    messageId: "message-1",
+    comment: "Thanks for this.",
+  });
+  assert.equal(reply.isError, undefined);
+  assert.deepEqual(calls.replied, [["message-1", "Thanks for this."]]);
+  const answered = JSON.parse(textOf(reply));
+  assert.equal(answered.subject, "RE: Weekly report");
+  assert.match(answered.body, /^Thanks for this\./);
+  assert.equal(answered.sent, false);
+
+  const forward = await call(client, "create_forward_draft", {
+    messageId: "message-1",
+    to: ["bo@example.com"],
+    comment: "Passing this on.",
+  });
+  assert.equal(forward.isError, undefined);
+  assert.deepEqual(calls.forwarded, [
+    ["message-1", ["bo@example.com"], "Passing this on."],
+  ]);
+  const moved = JSON.parse(textOf(forward));
+  assert.equal(moved.subject, "FW: Weekly report");
+  assert.deepEqual(moved.to, ["bo@example.com"]);
+  assert.equal(moved.sent, false);
+});
+
+test("update_draft writes only the fields it is given", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const revised = await call(client, "update_draft", {
+    messageId: "draft-1",
+    subject: "Weekly report, corrected",
+  });
+  assert.equal(revised.isError, undefined);
+  assert.deepEqual(calls.patched, [
+    ["draft-1", { subject: "Weekly report, corrected" }],
+  ]);
+  assert.equal(JSON.parse(textOf(revised)).subject, "Weekly report, corrected");
+
+  const nothing = await call(client, "update_draft", { messageId: "draft-1" });
+  assert.equal(nothing.isError, true);
+  assert.match(textOf(nothing), /at least one of/);
+  assert.equal(calls.patched.length, 1, "an empty patch reached Graph");
+
+  // A format with no body would be a patch that changes nothing at all.
+  const formatOnly = await call(client, "update_draft", {
+    messageId: "draft-1",
+    bodyFormat: "html",
+  });
+  assert.equal(formatOnly.isError, true);
+  assert.match(textOf(formatOnly), /so send body as well/);
+  assert.equal(calls.patched.length, 1);
+
+  // A reply echoes the quoted original, so the echo has a ceiling of its own.
+  const stored = "x".repeat(maxEchoedBodyChars + 500);
+  const long = await call(client, "update_draft", {
+    messageId: "draft-1",
+    body: stored,
+  });
+  const echoed = JSON.parse(textOf(long));
+  assert.equal(echoed.body, stored.slice(0, maxEchoedBodyChars));
+  assert.match(
+    echoed.note,
+    new RegExp(
+      `first ${maxEchoedBodyChars} of ${stored.length} stored characters`,
+    ),
+    "the echo says it is partial",
+  );
+});
+
+test("list_drafts reads the drafts and says none of them is sent", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const result = await call(client, "list_drafts", { limit: 5 });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(calls.draftPages, [{ top: 5, cursor: undefined }]);
+  const payload = JSON.parse(textOf(result));
+  assert.equal(payload.items[0].id, "draft-1");
+  assert.equal(payload.nextCursor, "https://graph/next-drafts?skiptoken=1");
+  assert.match(payload.note, /None of these drafts have been sent/);
+});
+
+test("delete_draft removes one draft and reports it", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const result = await call(client, "delete_draft", { messageId: "draft-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(calls.deleted, ["draft-1"]);
+  assert.deepEqual(JSON.parse(textOf(result)), {
+    deleted: true,
+    messageId: "draft-1",
+    note: "The draft is gone from the mailbox. Nothing was sent.",
+  });
+});
+
+test("add_attachment uploads a file to the draft within the schema's bounds", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const added = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    name: "note.txt",
+    contentType: "text/plain",
+    contentBase64: "aGVsbG8=",
+  });
+  assert.equal(added.isError, undefined);
+  assert.deepEqual(calls.uploaded, [
+    [
+      "draft-1",
+      {
+        name: "note.txt",
+        contentType: "text/plain",
+        contentBase64: "aGVsbG8=",
+      },
+    ],
+  ]);
+  assert.equal(JSON.parse(textOf(added)).id, "draft-1");
+
+  await call(client, "add_attachment", {
+    messageId: "draft-2",
+    name: "note.txt",
+    contentBase64: "aGVsbG8=",
+  });
+  const defaulted = calls.uploaded[1][1] as { contentType: string };
+  assert.equal(defaulted.contentType, "application/octet-stream");
+
+  // Content that is not base64 never reaches Graph, let alone the draft.
+  const broken = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    name: "note.txt",
+    contentType: "text/plain",
+    contentBase64: "not base64 at all",
+  });
+  assert.equal(broken.isError, true);
+  assert.match(textOf(broken), /Invalid arguments for tool add_attachment/);
+  assert.equal(calls.uploaded.length, 2);
+});
+
+test("recipients are validated addresses before anything is written", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const displayForm = await call(client, "create_draft", {
+    to: ["Ana <ana@example.com>"],
+    subject: "Weekly report",
+  });
+  assert.equal(displayForm.isError, true);
+  assert.match(textOf(displayForm), /Invalid email address/);
+
+  const nobody = await call(client, "create_draft", { to: [] });
+  assert.equal(nobody.isError, true);
+
+  const forwarded = await call(client, "create_forward_draft", {
+    messageId: "message-1",
+    to: ["ana at example.com"],
+    comment: "Passing this on.",
+  });
+  assert.equal(forwarded.isError, true);
+
+  assert.deepEqual(calls.created, []);
+  assert.deepEqual(calls.forwarded, []);
+});
+
 test("auth_status reports the session and the last sign-in failure", async (t) => {
   const config = testConfig(t);
   const { deps } = fakeDeps(config);
@@ -446,6 +790,8 @@ test("auth_status reports the session and the last sign-in failure", async (t) =
     account: "someone@example.com",
     authority: config.authority,
     cachePath: config.cachePath,
+    readonly: false,
+    scopes: ["User.Read", "Mail.ReadWrite", "email", "profile"],
   });
 
   writeLoginState(config, { state: "error", message: "no client id" });

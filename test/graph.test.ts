@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createGraph, messagesPath } from "../src/core/graph.ts";
+import {
+  createGraph,
+  maxAttachmentBytes,
+  messagesPath,
+} from "../src/core/graph.ts";
 import type { GraphClient, GraphRequest } from "../src/core/graph.ts";
 
 const messageFields =
   "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments";
 const fullMessageFields = `${messageFields},toRecipients,ccRecipients,body`;
+const draftFields = `${messageFields},isDraft,webLink,toRecipients`;
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 type Recorded = {
   path: string;
+  verb: "get" | "post" | "patch" | "delete";
   headers: string[][];
   select?: string[];
   orderby?: string;
   top?: number;
   filter?: string;
   search?: string;
+  body?: unknown;
 };
 
 function responder(path: string): unknown {
@@ -34,7 +45,7 @@ function fakeClient(respond: (path: string) => unknown = responder) {
   const requests: Recorded[] = [];
   const client: GraphClient = {
     api(path) {
-      const request: Recorded = { path, headers: [] };
+      const request: Recorded = { path, verb: "get", headers: [] };
       requests.push(request);
       const chain: GraphRequest = {
         header(name, value) {
@@ -63,6 +74,19 @@ function fakeClient(respond: (path: string) => unknown = responder) {
         },
         async get<T>() {
           return respond(path) as T;
+        },
+        async post<T>(body: unknown) {
+          request.verb = "post";
+          request.body = body;
+          return respond(path) as T;
+        },
+        async patch<T>(body: unknown) {
+          request.verb = "patch";
+          request.body = body;
+          return respond(path) as T;
+        },
+        async delete() {
+          request.verb = "delete";
         },
       };
       return chain;
@@ -207,4 +231,147 @@ test("a nextLink becomes an opaque cursor that replays the query", async () => {
   assert.deepEqual(searched.items, ["first"]);
   assert.equal(requests[2].path, searchCursor);
   assert.deepEqual(requests[2].headers, []);
+});
+
+const savedDraft = () => ({ id: "draft-1", isDraft: true });
+
+test("create_draft posts a new message, which Graph stores as a draft", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+
+  const created = await graph.createDraft({
+    to: ["ana@example.com"],
+    cc: ["bo@example.com"],
+    subject: "Hello",
+    body: "<p>Hi</p>",
+    bodyFormat: "html",
+    categories: ["work"],
+  });
+
+  assert.deepEqual(created, { id: "draft-1", isDraft: true });
+  assert.deepEqual(requests.length, 1);
+  const request = requests[0];
+  assert.equal(request.path, "/me/messages");
+  assert.equal(request.verb, "post");
+  assert.deepEqual(request.body, {
+    subject: "Hello",
+    body: { contentType: "html", content: "<p>Hi</p>" },
+    toRecipients: [{ emailAddress: { address: "ana@example.com" } }],
+    ccRecipients: [{ emailAddress: { address: "bo@example.com" } }],
+    categories: ["work"],
+  });
+});
+
+test("a draft request leaves out what was not given, so a patch clears nothing", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+
+  await graph.createDraft({ to: ["ana@example.com"] });
+  await graph.updateDraft("a/b", { subject: "Changed" });
+
+  assert.deepEqual(requests[0].body, {
+    toRecipients: [{ emailAddress: { address: "ana@example.com" } }],
+  });
+  assert.equal(requests[1].path, "/me/messages/a%2Fb");
+  assert.equal(requests[1].verb, "patch");
+  assert.deepEqual(requests[1].body, { subject: "Changed" });
+});
+
+test("a reply and a forward draft go to the create actions with the comment", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+
+  await graph.createReplyDraft("a/b", "Thanks for this.");
+  await graph.createForwardDraft("a/b", ["bo@example.com"], "Passing on.");
+
+  assert.deepEqual(requests[0].path, "/me/messages/a%2Fb/createReply");
+  assert.equal(requests[0].verb, "post");
+  assert.deepEqual(requests[0].body, { comment: "Thanks for this." });
+  assert.deepEqual(requests[1].path, "/me/messages/a%2Fb/createForward");
+  assert.deepEqual(requests[1].body, {
+    comment: "Passing on.",
+    toRecipients: [{ emailAddress: { address: "bo@example.com" } }],
+  });
+});
+
+test("list_drafts reads the drafts folder newest first", async () => {
+  const { graph, requests } = graphFor();
+
+  await graph.listDrafts({ top: 4 });
+
+  const request = requests[0];
+  assert.equal(request.path, "/me/mailFolders/drafts/messages");
+  assert.deepEqual(request.select, draftFields.split(","));
+  assert.equal(request.orderby, "receivedDateTime desc");
+  assert.equal(request.top, 4);
+});
+
+test("list_drafts replays a cursor instead of rebuilding the query", async () => {
+  const cursor = "/me/mailFolders/drafts/messages?$skiptoken=drafts";
+  const { graph, requests } = graphFor((path) =>
+    path === cursor
+      ? { value: [{ id: "draft-2" }] }
+      : { value: [{ id: "draft-1" }], "@odata.nextLink": cursor },
+  );
+
+  const first = await graph.listDrafts();
+  assert.equal(first.nextCursor, cursor);
+  const second = await graph.listDrafts({ top: 50, cursor });
+
+  assert.deepEqual(second.items, [{ id: "draft-2" }]);
+  assert.equal(requests[1].path, cursor);
+  assert.equal(requests[1].select, undefined);
+  assert.equal(requests[1].top, undefined);
+});
+
+test("delete_draft deletes that one message", async () => {
+  const { graph, requests } = graphFor();
+
+  await graph.deleteDraft("a/b");
+
+  assert.equal(requests[0].path, "/me/messages/a%2Fb");
+  assert.equal(requests[0].verb, "delete");
+});
+
+test("add_attachment posts a file attachment to the draft", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+
+  await graph.addAttachment("a/b", {
+    name: "note.txt",
+    contentType: "text/plain",
+    contentBase64: Buffer.from("hello").toString("base64"),
+  });
+
+  const request = requests[0];
+  assert.equal(request.path, "/me/messages/a%2Fb/attachments");
+  assert.equal(request.verb, "post");
+  assert.deepEqual(request.body, {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: "note.txt",
+    contentType: "text/plain",
+    contentBase64: Buffer.from("hello").toString("base64"),
+  });
+});
+
+test("an attachment at or over 3 MB is refused before any request", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+  const attachment = (bytes: number) => ({
+    name: "big.bin",
+    contentType: "application/octet-stream",
+    contentBase64: Buffer.alloc(bytes, 0x61).toString("base64"),
+  });
+
+  assert.throws(
+    () => graph.addAttachment("a/b", attachment(maxAttachmentBytes)),
+    (error: unknown) => {
+      assert.match(
+        messageOf(error),
+        /big\.bin is 3145728 bytes and a single-request attachment must stay under 3145728 bytes \(3 MB\)/,
+      );
+      assert.match(messageOf(error), /upload session/);
+      return true;
+    },
+  );
+  assert.deepEqual(requests, [], "an upload that must fail was not attempted");
+
+  // Just under the ceiling still goes up.
+  await graph.addAttachment("a/b", attachment(maxAttachmentBytes - 1));
+  assert.equal(requests.length, 1);
 });
