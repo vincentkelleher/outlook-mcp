@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,7 +45,29 @@ export function homeDir(env: Env) {
  * a token.
  */
 export function loginStatePath(config: Config): string {
-  return join(config.stateDir, "login.json");
+  // A flow is only interchangeable with a flow that asked Microsoft for the same
+  // permissions: a `Mail.Read` code the user approves cannot widen a session to
+  // `Mail.ReadWrite`. So the mail scope is part of the file name, and a
+  // read-only server and a read-write server sharing one machine keep separate
+  // flows and can neither answer for, nor block, each other.
+  const mailScope =
+    scopesFor(config.readonly).find((scope) => scope.startsWith("Mail.")) ??
+    "no-mail-scope";
+  return join(config.stateDir, `login-${mailScope}.json`);
+}
+
+/**
+ * Every sign-in state file present, whatever scope set it belongs to. Signing
+ * out clears them all, including any left behind by an earlier name.
+ */
+export function loginStatePaths(config: Config): string[] {
+  try {
+    return readdirSync(config.stateDir)
+      .filter((name) => name.startsWith("login") && name.endsWith(".json"))
+      .map((name) => join(config.stateDir, name));
+  } catch {
+    return [];
+  }
 }
 
 /**

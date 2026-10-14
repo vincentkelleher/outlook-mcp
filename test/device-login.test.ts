@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -10,11 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig } from "../src/core/config.ts";
+import { loadConfig, loginStatePath } from "../src/core/config.ts";
 import type { Config } from "../src/core/config.ts";
 import {
   beginLogin,
   readLoginState,
+  runLogin,
   startLogin,
   writeLoginState,
 } from "../src/core/device-login.ts";
@@ -33,7 +34,7 @@ function testConfig(t: { after: (fn: () => void) => void }): Config {
 }
 
 const rawState = (config: Config) =>
-  JSON.parse(readFileSync(join(config.stateDir, "login.json"), "utf8")) as {
+  JSON.parse(readFileSync(loginStatePath(config), "utf8")) as {
     state?: string;
     pid?: number;
     expiresAt?: string;
@@ -47,6 +48,19 @@ function deadPid(): number {
   });
   assert.throws(() => process.kill(finished.pid, 0), { code: "ESRCH" });
   return finished.pid;
+}
+
+/** A process that is certainly alive and certainly not this one. */
+function liveForeignPid(): { pid: number; stop: () => void } {
+  const sleeper = spawn(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 30000)"],
+    { stdio: "ignore" },
+  );
+  const pid = sleeper.pid;
+  assert.ok(pid !== undefined);
+  assert.doesNotThrow(() => process.kill(pid, 0));
+  return { pid, stop: () => sleeper.kill() };
 }
 
 /**
@@ -203,10 +217,7 @@ test("the state directory and its file are owner-only", (t) => {
   writeLoginState(config, { state: "pending", userCode: "ABC-XYZ" });
 
   assert.equal(statSync(config.stateDir).mode & 0o777, 0o700);
-  assert.equal(
-    statSync(join(config.stateDir, "login.json")).mode & 0o777,
-    0o600,
-  );
+  assert.equal(statSync(loginStatePath(config)).mode & 0o777, 0o600);
 });
 
 test("a flow no process owns does not block sign-in", (t) => {
@@ -241,4 +252,168 @@ test("a flow no process owns does not block sign-in", (t) => {
   startLogin(config, { spawnChild, entry: "index.js" });
 
   assert.equal(launched.length, 2);
+});
+
+test("two clients that disagree about readonly run two flows", (t) => {
+  // One machine, one state directory, two servers: a read-only client and a
+  // read-write client ask Microsoft for different scopes, so the code one of
+  // them publishes cannot answer for the other. Reusing it would put the user
+  // through a consent that leaves the second server still asking for login.
+  const home = mkdtempSync(join(tmpdir(), "outlook-login-scopes-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const env = { HOME: home, OUTLOOK_OAUTH_CLIENT_ID: clientId };
+  const readOnly = loadConfig({ ...env, OUTLOOK_MCP_READONLY: "1" });
+  const readWrite = loadConfig({ ...env, OUTLOOK_MCP_READONLY: "0" });
+
+  assert.notEqual(
+    loginStatePath(readOnly),
+    loginStatePath(readWrite),
+    "a flow for one scope set is a different file from a flow for the other",
+  );
+
+  const first = fakeSpawn();
+  startLogin(readOnly, {
+    spawnChild: first.spawnChild,
+    entry: "index.js",
+  });
+  writeLoginState(readOnly, {
+    state: "pending",
+    pid: process.pid,
+    verificationUri,
+    userCode: "READ-ONLY-CODE",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  });
+
+  // The read-write server must not be told "already starting" with a code that
+  // cannot grant what it needs, and must not overwrite the code its own
+  // user may already be typing into the other window.
+  const second = fakeSpawn();
+  startLogin(readWrite, {
+    spawnChild: second.spawnChild,
+    entry: "index.js",
+  });
+
+  assert.equal(
+    second.launched.length,
+    1,
+    "the second scope set started its own",
+  );
+  assert.equal(readLoginState(readWrite)?.userCode, undefined);
+  assert.equal(readLoginState(readOnly)?.userCode, "READ-ONLY-CODE");
+
+  // Same scope set, live flow: now it is genuinely the same flow, so no second
+  // request goes to Microsoft and the published code is handed back.
+  startLogin(readWrite, {
+    spawnChild: second.spawnChild,
+    entry: "index.js",
+  });
+  assert.equal(second.launched.length, 1, "one flow per scope set");
+});
+
+test("an outcome left in the state file does not block a new flow", (t) => {
+  // The claim on the state file is now exclusive, which must not mean that a
+  // finished attempt - or a flow whose process died - holds sign-in for ever.
+  const config = testConfig(t);
+  const future = new Date(Date.now() + 600_000).toISOString();
+  const { spawnChild, launched } = fakeSpawn();
+
+  for (const leftover of [
+    { state: "error", message: "the last attempt failed" },
+    { state: "authorized" },
+    {
+      state: "pending",
+      pid: deadPid(),
+      verificationUri,
+      userCode: "DEAD-FLOW",
+      expiresAt: future,
+    },
+  ] as const) {
+    writeLoginState(config, leftover as never);
+    startLogin(config, { spawnChild, entry: "index.js" });
+  }
+
+  assert.equal(launched.length, 3, "each leftover was claimed past");
+});
+
+test("a login in a terminal does not hijack another process's code", async (t) => {
+  const config = testConfig(t);
+  const future = new Date(Date.now() + 600_000).toISOString();
+
+  // Somebody else's live flow: refusing here is the whole point, because taking
+  // the state would replace a code the user may already be typing.
+  const other = liveForeignPid();
+  t.after(() => other.stop());
+  writeLoginState(config, {
+    state: "pending",
+    pid: other.pid,
+    verificationUri,
+    userCode: "THEIR-CODE",
+    expiresAt: future,
+  });
+
+  const stderr = process.stderr.write;
+  const written: string[] = [];
+  process.stderr.write = (chunk: string | Uint8Array) => {
+    written.push(chunk.toString());
+    return true;
+  };
+  t.after(() => {
+    process.stderr.write = stderr;
+  });
+
+  await runLogin(config);
+
+  process.stderr.write = stderr;
+  assert.equal(
+    readLoginState(config)?.userCode,
+    "THEIR-CODE",
+    "the other flow's code survived",
+  );
+  assert.match(written.join(""), /already running as process/);
+
+  // The detached child that owns its own lease is still allowed to take it,
+  // which is the normal path and must not be blocked by the guard above. No
+  // client id is configured here, so sign-in fails on the way to Microsoft
+  // rather than reaching Microsoft: a unit test has no business dialling out.
+  const ownedHome = mkdtempSync(join(tmpdir(), "outlook-login-owner-"));
+  t.after(() => rmSync(ownedHome, { recursive: true, force: true }));
+  const owned = loadConfig({
+    HOME: ownedHome,
+    OUTLOOK_MCP_STATE_DIR: join(ownedHome, "state"),
+  });
+  writeLoginState(owned, {
+    state: "pending",
+    pid: process.pid,
+    verificationUri,
+    userCode: "OUR-CODE",
+    expiresAt: future,
+  });
+
+  const stderr2 = process.stderr.write;
+  const again: string[] = [];
+  process.stderr.write = (chunk: string | Uint8Array) => {
+    again.push(chunk.toString());
+    return true;
+  };
+  // Sign-in reports failure by rethrowing, so the CLI exits non-zero; the guard
+  // is what is under test, not the reason sign-in could not proceed.
+  let thrown: Error | undefined;
+  try {
+    await runLogin(owned);
+  } catch (error) {
+    thrown = error as Error;
+  } finally {
+    process.stderr.write = stderr2;
+  }
+
+  assert.doesNotMatch(
+    again.join(""),
+    /already running as process/,
+    "the owner of a live flow was refused by the guard",
+  );
+  assert.match(
+    thrown?.message ?? "",
+    /OUTLOOK_OAUTH_CLIENT_ID/,
+    "sign-in stopped on the stated missing client id, not on the guard",
+  );
 });

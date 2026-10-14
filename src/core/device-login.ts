@@ -53,15 +53,21 @@ const statePollMs = 100;
  */
 const launchLeaseMs = 30_000;
 
-export function writeLoginState(config: Config, state: LoginState): void {
-  const path = loginStatePath(config);
-  const dir = dirname(path);
+function stateDirectory(config: Config): string {
+  const dir = dirname(loginStatePath(config));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // mkdir's mode is filtered by the umask and ignored when the directory is
   // already there, so state it again: a user code is redeemable by whoever reads
   // it, and a shared state directory must not make it world-readable.
   chmodSync(dir, 0o700);
-  writeFileSync(path, JSON.stringify(state), { mode: 0o600 });
+  return dir;
+}
+
+export function writeLoginState(config: Config, state: LoginState): void {
+  stateDirectory(config);
+  writeFileSync(loginStatePath(config), JSON.stringify(state), {
+    mode: 0o600,
+  });
 }
 
 /**
@@ -125,6 +131,31 @@ function clearLoginState(config: Config): void {
 }
 
 /**
+ * Take the state file for a new flow, atomically. Checking `inFlight` and then
+ * writing is two operations, so two processes can both decide they are first;
+ * creating the file with `wx` makes that decision one, and only one of them
+ * creates it. Whatever the check leaves behind that is not a live flow - a
+ * finished outcome, or a flow whose process died - is replaced.
+ */
+function claimLaunch(config: Config, lease: LoginState): boolean {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    stateDirectory(config);
+    try {
+      writeFileSync(loginStatePath(config), JSON.stringify(lease), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (inFlight(readLoginState(config))) return false;
+      clearLoginState(config);
+    }
+  }
+  return false;
+}
+
+/**
  * Start sign-in in a process that survives the caller. The device-code flow
  * polls Microsoft for up to 15 minutes, far past any MCP request timeout, so
  * the child is detached, unref'd and left without stdio.
@@ -139,15 +170,16 @@ export function startLogin(
   // One flow at a time. Two clients that both spawned would each ask Microsoft
   // for a code, show the user two of them, and the loser would later overwrite
   // the winner's outcome with an error - while Microsoft rate-limits the retry.
-  if (inFlight(readLoginState(config))) return;
-  clearLoginState(config);
+  // The claim is made before spawning, under our own pid, so no second client
+  // can slip in while the spawn is in flight.
+  if (!claimLaunch(config, launchLease(process.pid))) return;
   const launch = deps.spawnChild ?? spawn;
   const child = launch(process.execPath, [entry, "login"], {
     stdio: "ignore",
     detached: true,
   });
-  // The lease names the child, not us: this process may be gone by the time a
-  // second client asks, and the flow outlives it.
+  // The lease then names the child, not us: this process may be gone by the time
+  // a second client asks, and the flow outlives it.
   writeLoginState(config, launchLease(child.pid ?? process.pid));
   // A child that cannot be started writes nothing at all, so without this the
   // caller waits out the whole poll and reports a slow sign-in instead of the
@@ -219,9 +251,21 @@ export async function beginLogin(
  * the moment Microsoft issues it, then the outcome.
  */
 export async function runLogin(config: Config): Promise<void> {
-  // Take the lease for this process rather than just deleting the old state: it
-  // replaces whatever the last attempt left, and it is what stops a second
-  // client spawning a competing flow while Microsoft has not answered yet.
+  // The detached child owns the state it was spawned for and reclaims it under
+  // its own pid. But a login started in a terminal while another process holds a
+  // live flow must not take that state: it would replace a code the user may
+  // already be typing with a second one they were never shown.
+  const existing = readLoginState(config);
+  if (
+    existing?.state === "pending" &&
+    inFlight(existing) &&
+    existing.pid !== process.pid
+  ) {
+    console.error(
+      `A sign-in is already running as process ${existing.pid}, so this one did not start and no second code was issued. Ask the agent for auth_status to see the code that is live, or sign out to clear it.`,
+    );
+    return;
+  }
   writeLoginState(config, launchLease(process.pid));
   try {
     await createAuth({ config }).accessToken({
