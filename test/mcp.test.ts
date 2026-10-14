@@ -1022,6 +1022,29 @@ test("login starts a flow when the cached grant is too narrow", async (t) => {
   assert.match(launch.instructions, /ABC-XYZ/);
 });
 
+test("login starts no flow when the session could not be checked", async (t) => {
+  // Microsoft unreachable is not a grant too narrow. Starting a device-code flow
+  // here would spend one of a rate-limited kind, on a machine whose sign-in is
+  // fine, and would need the network that just failed.
+  const config = testConfig(t);
+  const { deps, calls } = fakeDeps(config);
+  deps.authStatus = async () => ({
+    signedIn: false,
+    account: "someone@example.com",
+    reason: "unavailable",
+    authority: config.authority,
+    cachePath: config.cachePath,
+  });
+  const client = await connect(t, deps);
+
+  const answer = JSON.parse(textOf(await call(client, "login")));
+
+  assert.equal(calls.loginStarts, 0, "a failed check started a flow");
+  assert.equal(answer.state, "error");
+  assert.match(answer.instructions, /Retry the call later/);
+  assert.doesNotMatch(answer.instructions, /ABC-XYZ|verification/);
+});
+
 test("a usable token means login starts no flow", async (t) => {
   const config = testConfig(t);
   const { deps, calls } = fakeDeps(config, { signedIn: true });

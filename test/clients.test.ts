@@ -191,9 +191,12 @@ test("the migration plan is history: not shipped, and cited by nothing", () => {
   const manifest = JSON.parse(
     readFileSync(join(repo, "package.json"), "utf8"),
   ) as { files?: string[] };
+  // docs/clients.md is user documentation and the README links to it, so it
+  // ships. `docs` as a directory does not, which is what keeps the plan out.
   assert.deepEqual(manifest.files, [
     "dist",
     "skills",
+    "docs/clients.md",
     "README.md",
     "SECURITY.md",
     "CHANGELOG.md",

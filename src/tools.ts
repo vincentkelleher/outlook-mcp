@@ -1,4 +1,12 @@
-import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { createAuth, logout } from "./core/auth.ts";
@@ -144,6 +152,36 @@ function safeFileName(value: string | undefined): string {
  * resolved and real - so neither `..` in a name nor a symlink waiting inside the
  * directory can write outside - before a single byte is written.
  */
+/**
+ * Open the file without following a symlink, so the gap between the realpath
+ * check and the write cannot be used to swap the destination for a link.
+ * Defence in depth rather than the guard: whoever could plant that symlink
+ * already writes inside a 0700 directory. Where the flag does not exist the
+ * realpath check stands alone, and an overwrite still works, which a "wx" flag
+ * would break on the second download of the same attachment.
+ */
+const noFollowWriteFlag: number | string =
+  typeof constants.O_NOFOLLOW === "number"
+    ? constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_TRUNC |
+      constants.O_NOFOLLOW
+    : "w";
+
+/**
+ * `writeFileSync` types its flag as a string, so a numeric one needs the lower
+ * level open. Writing by descriptor also sets the mode at creation; a file that
+ * already exists keeps the mode it has, which is what a re-download wants.
+ */
+function writeNoFollow(path: string, bytes: Buffer): void {
+  const descriptor = openSync(path, noFollowWriteFlag, 0o600);
+  try {
+    writeSync(descriptor, bytes);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function attachmentPath(
   config: Config,
   dir: string | undefined,
@@ -325,7 +363,7 @@ const coreTools: Tool[] = [
         attachment.name ?? attachmentId,
       );
       const bytes = Buffer.from(attachment.contentBytes ?? "", "base64");
-      writeFileSync(path, bytes, { mode: 0o600 });
+      writeNoFollow(path, bytes);
       const inline =
         encoding === "base64" && bytes.byteLength <= maxInlineBytes;
       return {
@@ -346,7 +384,7 @@ const coreTools: Tool[] = [
     name: "auth_status",
     title: "Sign-in status",
     description:
-      "Report the Outlook session: { signedIn, account, reason, authority, cachePath, readonly, scopes, lastLoginError, signInPending, verificationUri, userCode, expiresAt }. signedIn is true only when a token can actually be obtained for the scopes below, so an account cached under a narrower grant reports signedIn false with reason needsConsent, and an expired one reports reason expired - either way login starts a fresh sign-in. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when drafts are offered, Mail.Read in readonly mode, where no draft tool is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. While a sign-in flow is open signInPending is true and this carries the verificationUri and userCode to show the user, with expiresAt, so the code is found here even when another client started the flow. Cheap and idempotent: call it repeatedly to poll after login.",
+      "Report the Outlook session: { signedIn, account, reason, authority, cachePath, readonly, scopes, lastLoginError, signInPending, verificationUri, userCode, expiresAt }. signedIn is true only when a token can actually be obtained for the scopes below, so an account cached under a narrower grant reports signedIn false with reason needsConsent, and an expired one reports reason expired - either way login starts a fresh sign-in. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when drafts are offered, Mail.Read in readonly mode, where no draft tool is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. While a sign-in flow is open signInPending is true and this carries the verificationUri and userCode to show the user, with expiresAt, so the code is found here even when another client started the flow. Safe to call repeatedly to poll after login, but not free: confirming a session can mean asking Microsoft for a token and rewriting the cache, so poll every few seconds rather than in a tight loop, and treat reason unavailable as a failed check to retry rather than a sign-in to fix.",
     annotations: read,
     inputSchema: noArguments,
     handler: async (deps) => {
@@ -376,7 +414,7 @@ const coreTools: Tool[] = [
     name: "login",
     title: "Sign in",
     description:
-      "Start signing in and return immediately. Microsoft's device-code flow can take minutes while the user approves it, so this never waits: it returns a verificationUri and userCode to show the user, then the agent polls auth_status until signedIn is true and retries whatever failed. If a usable session already exists it says so and starts nothing; if the cached account's grant is too narrow for the scopes auth_status reports, reason is needsConsent and this does start a flow, because re-consent is the only way to widen it. While a flow is already open it returns that flow's code instead of starting a competing one.",
+      "Start signing in and return immediately. Microsoft's device-code flow can take minutes while the user approves it, so this never waits: it returns a verificationUri and userCode to show the user, then the agent polls auth_status until signedIn is true and retries whatever failed. If a usable session already exists it says so and starts nothing; if the cached account's grant is too narrow for the scopes auth_status reports, reason is needsConsent and this does start a flow, because re-consent is the only way to widen it. While a flow is already open it returns that flow's code instead of starting a competing one. When auth_status reports reason unavailable the session could not be checked at all, usually because Microsoft could not be reached, and this starts nothing: retry later instead, because a consent flow needs the same network and Microsoft rate-limits these.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -387,6 +425,18 @@ const coreTools: Tool[] = [
     handler: async (deps) => {
       const status = await deps.authStatus();
       if (status.signedIn) return { ...alreadySignedIn(status.account) };
+      // A session that could not be checked is not a session that needs a wider
+      // grant. Starting a device-code flow here would spend one on a machine
+      // whose sign-in is fine - and a flow needs the network that just failed.
+      if (status.reason === "unavailable")
+        return {
+          state: "error",
+          account: status.account,
+          message:
+            "The session could not be checked, so no sign-in was started. This is not a consent problem.",
+          instructions:
+            "Retry the call later. Do not ask the user to sign in or to approve a code for this; if it persists, check the network and login.microsoftonline.com.",
+        };
       return { ...(await beginLogin(deps.config, deps.startLogin)) };
     },
   }),

@@ -85,6 +85,10 @@ jobs:
           echo "packed $tarball"
           tar -tzf "$tarball" | grep -q '^package/dist/index\.js$'
           tar -tzf "$tarball" | grep -q '^package/skills/outlook-skill/SKILL\.md$'
+          # README links to the client matrix, so a tarball without it ships a
+          # promise it cannot keep; the plan is a historical record and stays out.
+          tar -tzf "$tarball" | grep -q '^package/docs/clients\.md$'
+          ! tar -tzf "$tarball" | grep -q 'plan-mcp-skill'
           tar -xzf "$tarball" -O package/package.json | node -e '
             let text = "";
             process.stdin.on("data", (chunk) => (text += chunk));

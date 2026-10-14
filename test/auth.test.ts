@@ -27,7 +27,7 @@ import type {
 import { loadConfig } from "../src/core/config.ts";
 import type { Env } from "../src/core/config.ts";
 import { readLoginState, writeLoginState } from "../src/core/device-login.ts";
-import { AuthRequiredError } from "../src/core/errors.ts";
+import { AuthRequiredError, sessionProblem } from "../src/core/errors.ts";
 
 const clientId = "00000000-0000-0000-0000-000000000000";
 const consumers = "https://login.microsoftonline.com/consumers/";
@@ -498,6 +498,56 @@ test("a plaintext cache copy left by a killed write is swept on the next read", 
     true,
     "nothing else in the directory is gone",
   );
+});
+
+test("a session that could not be checked is not called a consent problem", async () => {
+  // Labelling every non-expiry failure needsConsent sent agents to re-consent on
+  // a machine whose session was fine - a laptop asleep, a DNS failure, a Microsoft
+  // incident - and each of those consent attempts spends a rate-limited device
+  // code. needsConsent now requires Microsoft to have said so.
+  const home = tempDir();
+  const account = { username: "someone@example.com" };
+  const { factory } = fakeMsal({
+    accounts: [[account]],
+    silent: async () => {
+      throw new Error(
+        "getaddrinfo ENOTFOUND login.microsoftonline.com while acquiring a token",
+      );
+    },
+  });
+  const config = loadConfig({ HOME: home, OUTLOOK_OAUTH_CLIENT_ID: clientId });
+
+  const status = await createAuth({ config, msal: factory }).authStatus();
+  assert.equal(status.signedIn, false);
+  assert.equal(status.reason, "unavailable");
+
+  // And what a caller is told must not advise the thing it must not do.
+  await assert.rejects(
+    createAuth({ config, msal: factory }).accessToken({ interactive: false }),
+    (error: Error) =>
+      /Could not confirm the Outlook session/.test(error.message) &&
+      /no re-consent is needed/.test(error.message),
+  );
+});
+
+test("the three reasons separate an outage from expiry from a narrow grant", async () => {
+  const reasons = [
+    ["invalid_grant Error(s): 70000", "expired"],
+    ["AADSTS700082: The refresh token has expired", "expired"],
+    ["AADSTS65001: the user has not consented", "needsConsent"],
+    ["interaction_required: consent required", "needsConsent"],
+    ["consent_required", "needsConsent"],
+    ["getaddrinfo ENOTFOUND login.microsoftonline.com", "unavailable"],
+    ["ECONNRESET while contacting the token endpoint", "unavailable"],
+    ["server_error: something happened", "unavailable"],
+  ] as const;
+  for (const [failure, expected] of reasons) {
+    assert.equal(
+      sessionProblem(failure),
+      expected,
+      `${failure} was labelled wrongly`,
+    );
+  }
 });
 
 test("createAuth hands back only what a caller uses", () => {

@@ -266,6 +266,10 @@ export function createGraph(deps: GraphDeps) {
         .api(target)
         .get<GraphCollection>();
       collected.push(...collection.value);
+      // Followed without assertGraphCursor, unlike a cursor that arrives from a
+      // model: this link came back from Graph over TLS on a request we chose, so
+      // validating it would guard nothing. Never copy this into a path a caller
+      // can supply.
       target = collection["@odata.nextLink"];
     }
     return Promise.all(collected.map(({ id }) => getAttachment(messageId, id)));

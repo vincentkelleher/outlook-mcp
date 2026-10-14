@@ -13,11 +13,11 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PublicClientApplication } from "@azure/msal-node";
 import type { ICachePlugin } from "@azure/msal-node";
-import { loadConfig, loginStatePath, scopesFor } from "./config.ts";
+import { loadConfig, loginStatePaths, scopesFor } from "./config.ts";
 import type { Config } from "./config.ts";
 import {
   AuthRequiredError,
-  isSessionExpiry,
+  sessionProblem,
   noSessionMessage,
   sessionProblemMessage,
 } from "./errors.ts";
@@ -49,7 +49,7 @@ export type MsalApplication = {
 export type MsalFactory = (config: Config) => MsalApplication;
 
 /** Why an account that exists cannot be used as it stands. */
-export type AuthProblem = "needsConsent" | "expired";
+export type AuthProblem = "needsConsent" | "expired" | "unavailable";
 
 export type AuthStatus = {
   signedIn: boolean;
@@ -233,13 +233,14 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
       await silent(account);
       return { signedIn: true, account: account.username, ...base };
     } catch (error) {
-      // A silent failure that is not expiry means the grant has to be widened,
-      // which only a fresh consent flow can do.
+      // Which of the three this is has one decider, in errors.ts, so the tool
+      // surface and the thrown message cannot disagree about whether the user
+      // owes a consent or the network simply failed.
       const reason = error instanceof Error ? error.message : String(error);
       return {
         signedIn: false,
         account: account.username,
-        reason: isSessionExpiry(reason) ? "expired" : "needsConsent",
+        reason: sessionProblem(reason),
         ...base,
       };
     }
@@ -255,5 +256,5 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
  */
 export function logout(config: Config = loadConfig()): void {
   rmSync(config.cachePath, { force: true });
-  rmSync(loginStatePath(config), { force: true });
+  for (const state of loginStatePaths(config)) rmSync(state, { force: true });
 }

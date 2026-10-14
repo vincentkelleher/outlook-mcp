@@ -100,7 +100,29 @@ async function advertised(
   return { client, names: listed.tools.map((tool) => tool.name).sort() };
 }
 
+/**
+ * Written out in full rather than read from the registry, on purpose. If the
+ * write surface is derived from `draftTools`, moving a draft tool into the read
+ * list moves both sides of every assertion below and the suite stays green while
+ * read-only mode starts advertising a write. This is the one copy that cannot
+ * move with the code.
+ */
+const draftWriteToolNames = [
+  "add_attachment",
+  "create_draft",
+  "create_forward_draft",
+  "create_reply_draft",
+  "delete_draft",
+  "list_drafts",
+  "update_draft",
+];
+
 test("the registry is the read tools plus seven draft tools, nothing else", () => {
+  assert.deepEqual(
+    [...draftToolNames].sort(),
+    draftWriteToolNames,
+    "the write surface changed: read-only mode and every assertion below depends on this list",
+  );
   assert.equal(draftToolNames.length, 7);
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),

@@ -23,6 +23,7 @@
   "files": [
     "dist",
     "skills",
+    "docs/clients.md",
     "README.md",
     "SECURITY.md",
     "CHANGELOG.md",
