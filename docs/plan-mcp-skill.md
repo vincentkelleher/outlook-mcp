@@ -1,5 +1,10 @@
 # Plan: Outlook for AI agents — MCP server + portable skill
 
+> **Historical design record.** Everything planned here shipped in 0.1.0. The
+> code, `README.md` and `docs/clients.md` are authoritative; where this document
+> disagrees with them, they are right and this one is out of date. It is kept for
+> the reasoning behind the choices and is not part of the published package.
+
 Locked decisions (2025 review):
 
 | Decision     | Choice                                                                                      |
@@ -61,9 +66,9 @@ Verified on this machine (Node v25.0.0): `node file.ts` and `node --test` run Ty
 - **Erasable syntax only** — no `enum`, `namespace`, or constructor parameter properties (they need transformation). Enforce with `"erasableSyntaxOnly": true`.
 - **Explicit import extensions** (`./core/auth.ts`) so Node runs the sources; `"allowImportingTsExtensions": true` plus `"rewriteRelativeImportExtensions": true` (TS ≥5.7; repo already pins 5.9.3) makes `tsc` emit correct `.js` specifiers.
 - **Remove Bun**: delete `bun.lock` + `bunfig.toml`, add `package-lock.json`, replace `Bun.env`/`Bun.argv`/`import.meta.main` (entry check = compare `process.argv[1]` realpath with `fileURLToPath(import.meta.url)`).
-- **The big one: retire `mock.module`.** It has no `node:test` equivalent (Node's `mock` patches object properties, not ESM resolution). Refactor `test/outlook.test.ts` to **dependency injection** instead: `createAuth({ msal, cachePath })` and `createGraph({ token, fetchImpl })`, with fakes passed in. This removes toolchain lock-in and is better design anyway — but budget it as real work, not a mechanical port.
+- **The big one: retire `mock.module`.** It has no `node:test` equivalent (Node's `mock` patches object properties, not ESM resolution). Refactor `test/outlook.test.ts` to **dependency injection** instead: `createAuth({ config, msal })` and `createGraph({ token, client })`, with fakes passed in (as built). This removes toolchain lock-in and is better design anyway — but budget it as real work, not a mechanical port.
 - Scripts: `dev`, `test`, `test:e2e`, `build`, `typecheck`, `format`, `format:check` (prettier stays), `prepare: npm run build` (makes git installs self-building).
-- CI (GitHub Actions): matrix Node 20 / 22 / 24 — `typecheck`, `test`, `build`, then a dist smoke (`node dist/index.js --help`, spawned-stdio e2e). Grep guard: fail if `Bun.` appears in `src/`, `test/`, `e2e/`, or `skills/`.
+- CI (GitHub Actions): matrix Node 22 / 24, plus a Node 20 job that only builds and smoke-tests (as built) — `typecheck`, `test`, `build`, then a dist smoke (`node dist/index.js --help`, spawned-stdio e2e). Grep guard: fail if `Bun.` appears in `src/`, `test/`, `e2e/`, or `skills/`.
 
 ## 4. MCP server design
 
@@ -134,7 +139,6 @@ Reuses the already-tested MSAL path. Alternative if orphan processes ever prove 
 | `OUTLOOK_MCP_STATE_DIR`      | `~/.outlook-skill/state` | Device-login state.                                                                                               |
 | `OUTLOOK_MCP_ATTACHMENT_DIR` | `$TMPDIR/outlook-mcp`    | Where `download_attachment` may write.                                                                            |
 | `OUTLOOK_MCP_READONLY`       | unset                    | Hide all draft tools; drops the scope to `Mail.Read`.                                                             |
-| `OUTLOOK_MCP_LOG_LEVEL`      | `info`                   | stderr only.                                                                                                      |
 
 Never a client secret: this stays a public client on the device-code flow.
 

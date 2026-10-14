@@ -370,14 +370,23 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
   assert.equal(logoutTool?.annotations?.readOnlyHint, false);
 
   // The annotations are what make a careful client ask the human first, so they
-  // are asserted on everything that writes a draft.
-  for (const name of draftToolNames.filter((name) => name !== "delete_draft")) {
+  // are asserted on everything that writes a draft. `list_drafts` is the one
+  // member of the draft group that only reads, and `delete_draft` is the one
+  // that destroys, so both sit outside the plain write shape.
+  for (const name of draftToolNames.filter(
+    (name) => name !== "delete_draft" && name !== "list_drafts",
+  )) {
     assert.deepEqual(
       listed.tools.find((tool) => tool.name === name)?.annotations,
       writeAnnotations,
       `${name} annotations`,
     );
   }
+  assert.deepEqual(
+    listed.tools.find((tool) => tool.name === "list_drafts")?.annotations,
+    readAnnotations,
+    "listing drafts is a GET and must not advertise itself as a write",
+  );
   const deleteTool = listed.tools.find((tool) => tool.name === "delete_draft");
   assert.deepEqual(deleteTool?.annotations, {
     ...writeAnnotations,

@@ -182,6 +182,23 @@ test("the scan really distinguishes the create actions from the sending ones", (
   assert.match(graphSource, /\/createForward/);
 });
 
+test("the mutating Graph calls are exactly the six reviewed draft writes", () => {
+  // A name regex cannot see a path assembled in pieces, so this closes the
+  // gap from the other side: every request that changes the mailbox goes
+  // through one of six call sites in src/core/graph.ts. A new one is not
+  // automatically wrong, but it must be looked at, and this test is where
+  // that conversation starts.
+  const source = readFileSync(join(repo, "src/core/graph.ts"), "utf8");
+  const verbs = [...source.matchAll(/\.(post|put|patch|delete)\(/g)]
+    .map((match) => match[1])
+    .sort();
+  assert.deepEqual(
+    verbs,
+    ["delete", "patch", "post", "post", "post", "post"],
+    "a new mutating Graph call appeared: a draft write may be fine, anything that transmits mail is not",
+  );
+});
+
 test("readonly mode advertises no draft tool at all", async (t) => {
   const config = testConfig(t, { OUTLOOK_MCP_READONLY: "1" });
   const { client, names } = await advertised(t, config);

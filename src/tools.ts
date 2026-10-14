@@ -619,7 +619,10 @@ const draftTools: Tool[] = [
     title: "List drafts",
     description:
       "List the mailbox's drafts, newest first, as { items, nextCursor }, where each item carries id, subject, from, receivedDateTime, isRead, bodyPreview, hasAttachments, isDraft, webLink and toRecipients - never a full body. None of these have been sent: they wait for a person to review and send them. nextCursor is opaque: send it back as cursor for the next page.",
-    annotations: draftHints,
+    // Reading the draft collection is still a read: it sits in the draft group
+    // because readonly mode hides it, but a client must not treat a GET as a
+    // write that needs confirming.
+    annotations: read,
     inputSchema: z.strictObject({
       limit: z
         .number()

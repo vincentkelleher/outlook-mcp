@@ -74,6 +74,36 @@ agent can drive. Everything published before this was the Bun CLI.
 - `scripts/outlook.ts`, the root `SKILL.md`, `bun.lock`, `bunfig.toml`, and the
   unused module-level `accessToken`/`authStatus` convenience wrappers.
 
+### Fixed
+
+Findings from review of this branch, all of them shipped before tagging.
+
+- **A sign-in that could never finish.** A session cached under the old
+  `Mail.Read` scope made `auth_status` report `signedIn: true` while every draft
+  tool failed for want of `Mail.ReadWrite`, and `login` replied "already signed
+  in" — so an agent looped. `auth_status` now confirms a token is actually
+  obtainable for the scopes in force, reports `needsConsent` when it is not, and
+  `login` starts a device-code flow in that state.
+- **A sign-in state that could not expire.** `expiresAt` was written with a
+  pending device code and never read, so a helper process that died left every
+  client telling the user to enter a dead code. Expired pending states are now
+  ignored, `auth_status` reports a pending code, a second `login` reuses the live
+  flow instead of overwriting it, and a spawn that fails is reported as failed
+  rather than as slow.
+- **A cursor that was trusted as a URL.** `cursor` went straight into the Graph
+  request, so a hostile value could aim it, bearer token included, at any host.
+  Scheme, host and path are now checked first; a genuine `nextLink` still works.
+- **An attachment name that escaped its directory.** `dir` was confined, symlink
+  included, but the file name came from the sender's file and was joined
+  unchecked, so `../` wrote outside the attachment directory. Names are reduced
+  to a safe basename and the resolved path is re-checked before the write.
+- **`OUTLOOK_MCP_LOG_LEVEL` is gone** rather than implemented. It was documented,
+  defaulted and tested, and nothing read it, because there is no logger.
+- Smaller: leftover plaintext cache copies are swept, the sign-in state file is
+  `0600` in a `0700` directory, `logout` clears the sign-in state too, page
+  limits and tool-name lists have one source instead of four, `list_drafts` no
+  longer advertises itself as a write, and unused exports are private.
+
 ### Known limitations
 
 - Attachments of 3–150 MB need a Graph upload session that this version does not
