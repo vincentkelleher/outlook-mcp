@@ -1,0 +1,30 @@
+# Everything the image installs or builds for itself.
+node_modules
+dist
+*.tsbuildinfo
+
+# Never, in any form. `loadEnvFile` reads a `.env` from the working directory,
+# and the working directory in the image is /app: a `.env` that travelled into
+# the layer would configure every container built from it, and would be one
+# `docker history` away from anyone who can pull the image.
+.env
+.env.*
+
+# Version control and CI: neither is a runtime input.
+.git
+.gitignore
+.github
+
+# Checks. `src` and the tsconfigs travel, because the build stage compiles them;
+# a test suite is not a build input, and the runtime stage copies only the names
+# it names, so nothing excluded here can end up in the image anyway.
+test
+e2e
+
+# Documentation that is not shipped in `files`, and the banner that goes with the
+# README on GitHub only. `docs/clients.md` is copied deliberately.
+doc
+docs/plan-mcp-skill.md
+
+# Anything a pack step left behind.
+*.tgz

@@ -8,6 +8,7 @@ import {
   messagesPath,
 } from "../src/core/graph.ts";
 import type { GraphClient, GraphRequest } from "../src/core/graph.ts";
+import { captureLogs } from "./support/log-capture.ts";
 
 const messageFields =
   "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments";
@@ -433,4 +434,63 @@ test("an attachment at or over 3 MB is refused before any request", async () => 
   // Just under the ceiling still goes up.
   await graph.addAttachment("a/b", attachment(maxAttachmentBytes - 1));
   assert.equal(requests.length, 1);
+});
+
+test("every Graph call leaves one debug line, and no line at the default level", async () => {
+  const { graph } = graphFor();
+
+  // A page of mail that arrived is not news: the caller writes the line that
+  // says what the user asked for. At the default level this module is silent.
+  const quiet = captureLogs({ level: "info" });
+  try {
+    await graph.listMessages({ top: 2 });
+    assert.deepEqual(quiet.lines, []);
+  } finally {
+    quiet.restore();
+  }
+
+  const traced = captureLogs({ level: "debug" });
+  try {
+    await graph.listMessages({ top: 2 });
+    const lines = traced.matching(/graph: graph request/);
+    assert.equal(lines.length, 1);
+    assert.match(
+      lines[0] ?? "",
+      /debug \d+ graph: graph request method=GET path=\/me\/mailFolders\/inbox\/messages ms=\d+ items=1/,
+    );
+
+    await graph.getMessage("AAMkAGI2TGV0MDE2OTY4NTUwMDAw");
+    assert.match(traced.lines.at(-1) ?? "", /path=\/me\/messages\/AAMkAGI2/);
+
+    // A cursor is a Graph URL whose query is the paging token. The path says
+    // which page; the token is a credential that repeats on every request.
+    await graph.listMessages({
+      cursor:
+        "https://graph.microsoft.com/v1.0/me/messages?%24skiptoken=TokenForNextPage",
+    });
+    assert.match(traced.lines.at(-1) ?? "", /path=\/v1\.0\/me\/messages\?…/);
+    assert.ok(!traced.text().includes("TokenForNextPage"), traced.text());
+  } finally {
+    traced.restore();
+  }
+});
+
+test("a failed Graph call is traced with its reason, and still throws", async () => {
+  const { graph } = graphFor(() => {
+    throw new Error("AADSTS700082: the token expired");
+  });
+  const traced = captureLogs({ level: "debug" });
+  try {
+    await assert.rejects(
+      () => graph.getMessage("message-1"),
+      /AADSTS700082/,
+      "the trace does not swallow the failure",
+    );
+    assert.match(
+      traced.text(),
+      /graph request failed method=GET path=\/me\/messages\/message-1 ms=\d+ reason="AADSTS700082: the token expired"/,
+    );
+  } finally {
+    traced.restore();
+  }
 });

@@ -62,6 +62,12 @@ JSON goes to stdout, diagnostics to stderr. `list` caps at 100 messages,
 `search` at 1000. The CLI reads and signs in only: drafts are an MCP tool, and
 a human sends either way.
 
+When a command fails, run it once with `OUTLOOK_LOG_LEVEL=debug` and read the
+stderr it prints: one line per step — the sign-in check, the Graph call, its
+duration, the item count — with message ids and full addresses at that level and
+never at the default. Do not paste the output to the user unless they ask; use it
+to say which step failed.
+
 ## Sign in without blocking
 
 Microsoft's device-code flow waits for a person, up to 15 minutes, so nothing

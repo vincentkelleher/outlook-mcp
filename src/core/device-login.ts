@@ -1,15 +1,19 @@
 import { spawn } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { createAuth } from "./auth.ts";
 import { loginStatePath } from "./config.ts";
 import type { Config } from "./config.ts";
+import { errorFields, logger, verificationCode } from "./log.ts";
+
+const log = logger("login");
 
 export type LoginState = {
   state: "pending" | "authorized" | "error";
@@ -65,8 +69,16 @@ function stateDirectory(config: Config): string {
 
 export function writeLoginState(config: Config, state: LoginState): void {
   stateDirectory(config);
-  writeFileSync(loginStatePath(config), JSON.stringify(state), {
-    mode: 0o600,
+  const path = loginStatePath(config);
+  writeFileSync(path, JSON.stringify(state), { mode: 0o600 });
+  // The state names a flow, so this says which one moved to which state, with
+  // the code masked until somebody asks for `debug` — a code is only useful to
+  // the person being told it, and a log file is not that person.
+  log.debug("sign-in state written", {
+    file: basename(path),
+    state: state.state,
+    owner: state.pid,
+    userCode: verificationCode(state.userCode, log.detailed),
   });
 }
 
@@ -84,15 +96,32 @@ function expired(state: LoginState): boolean {
 
 /** An absent, half-written or expired file simply means "not ready yet". */
 export function readLoginState(config: Config): LoginState | undefined {
+  const path = loginStatePath(config);
   let state: LoginState;
   try {
-    state = JSON.parse(
-      readFileSync(loginStatePath(config), "utf8"),
-    ) as LoginState;
-  } catch {
+    state = JSON.parse(readFileSync(path, "utf8")) as LoginState;
+  } catch (error) {
+    // An absent file is the ordinary case — nobody has signed in yet. A file
+    // that is there and will not parse is not: it is half a write, or something
+    // else living at this name, and every client on the machine then behaves as
+    // though no flow exists.
+    if (existsSync(path))
+      log.warn("sign-in state is unreadable and is treated as absent", {
+        file: basename(path),
+        ...errorFields(error, log.detailed),
+      });
     return undefined;
   }
-  return expired(state) ? undefined : state;
+  if (expired(state)) {
+    // Explains the one question this file raises: why a code the user was shown
+    // never becomes a session.
+    log.debug("sign-in state is past its deadline", {
+      file: basename(path),
+      expiresAt: state.expiresAt,
+    });
+    return undefined;
+  }
+  return state;
 }
 
 /** Signal 0 asks whether a process exists without disturbing it. */
@@ -172,8 +201,16 @@ export function startLogin(
   // the winner's outcome with an error - while Microsoft rate-limits the retry.
   // The claim is made before spawning, under our own pid, so no second client
   // can slip in while the spawn is in flight.
-  if (!claimLaunch(config, launchLease(process.pid))) return;
+  if (!claimLaunch(config, launchLease(process.pid))) {
+    const held = readLoginState(config);
+    log.info("another sign-in owns the state, so no second flow was started", {
+      owner: held?.pid,
+      userCode: verificationCode(held?.userCode, log.detailed),
+    });
+    return;
+  }
   const launch = deps.spawnChild ?? spawn;
+  log.debug("starting detached sign-in process", { entry });
   const child = launch(process.execPath, [entry, "login"], {
     stdio: "ignore",
     detached: true,
@@ -185,12 +222,15 @@ export function startLogin(
   // caller waits out the whole poll and reports a slow sign-in instead of the
   // reason. An `error` event also has to be handled or it throws out of the
   // server process.
-  child.on("error", (error) =>
+  child.on("error", (error) => {
+    log.error("the detached sign-in process could not be started", {
+      ...errorFields(error, log.detailed),
+    });
     writeLoginState(config, {
       state: "error",
       message: error instanceof Error ? error.message : String(error),
-    }),
-  );
+    });
+  });
   child.unref();
 }
 
@@ -207,6 +247,9 @@ async function waitForLoginState(config: Config): Promise<LoginState> {
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, statePollMs));
   }
+  log.warn("sign-in started but Microsoft issued no code within 3 seconds", {
+    timeoutMs: stateTimeoutMs,
+  });
   return {
     state: "pending",
     message:
@@ -261,9 +304,13 @@ export async function runLogin(config: Config): Promise<void> {
     inFlight(existing) &&
     existing.pid !== process.pid
   ) {
-    console.error(
-      `A sign-in is already running as process ${existing.pid}, so this one did not start and no second code was issued. Ask the agent for auth_status to see the code that is live, or sign out to clear it.`,
-    );
+    // Printed, not only logged: a person who ran `login` in a terminal is owed
+    // the sentence, whatever the log level says.
+    const notice = `A sign-in is already running as process ${existing.pid}, so this one did not start and no second code was issued. Ask the agent for auth_status to see the code that is live, or sign out to clear it.`;
+    console.error(notice);
+    log.warn("this sign-in stood down for one already running", {
+      owner: existing.pid,
+    });
     return;
   }
   writeLoginState(config, launchLease(process.pid));
@@ -282,14 +329,22 @@ export async function runLogin(config: Config): Promise<void> {
               : new Date(Date.now() + info.expiresIn * 1000).toISOString(),
         });
         console.error(info.message);
+        log.info("Microsoft issued a device code", {
+          verificationUri: info.verificationUri,
+          userCode: verificationCode(info.userCode, log.detailed),
+          expiresIn: info.expiresIn,
+        });
       },
     });
     writeLoginState(config, { state: "authorized" });
+    log.info("sign-in completed");
   } catch (error) {
-    writeLoginState(config, {
-      state: "error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    const message = error instanceof Error ? error.message : String(error);
+    // The state file outlives this process, and `auth_status` reports it, so a
+    // failure here is visible twice by design: once in the log that says when it
+    // happened, once in the status a polling agent reads afterwards.
+    log.error("sign-in failed", { ...errorFields(error, log.detailed) });
+    writeLoginState(config, { state: "error", message });
     throw error;
   }
 }

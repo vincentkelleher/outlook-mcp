@@ -16,6 +16,23 @@ agent can drive. Everything published before this was the Bun CLI.
   `outlook://inbox` and `outlook://messages/{id}` resources, server
   `instructions`, and a stdout guard so nothing but JSON-RPC reaches the
   transport.
+- **Streamable HTTP transport.** `serve --http` serves the same registry on
+  `/mcp` with the SDK's session handling, and answers `GET /health` with version,
+  mode and session count — never mail. The bind defaults to `127.0.0.1:3939`
+  (`OUTLOOK_MCP_HOST`, `OUTLOOK_MCP_PORT`, `--port 0` for a free port); every
+  request is admitted on its `Host` and `Origin`, because the transport
+  authenticates nobody; bodies are capped at 4 MiB, sessions at 32, and a session
+  with nothing connected retires after `OUTLOOK_MCP_SESSION_IDLE_MINUTES`.
+- **A Docker image**, published to `ghcr.io/vincentkelleher/outlook-skill` on tag
+  for `linux/amd64` and `linux/arm64`: multi-stage, `node:24-alpine`, no dev
+  dependencies, running as `node`, dumb-init as PID 1 so SIGTERM lands and the
+  detached sign-in child is reaped, and `/data` as the only state — session, sign-in
+  state, attachments. `docker build -t outlook-skill .` builds the same file CI
+  publishes from.
+- **`config docker`**, printing the remote entry (`{"type":"http",
+"url":"http://127.0.0.1:3939/mcp"}`) with the run command, the
+  `docker exec … outlook login` sign-in step and the loopback warning around it.
+  `--write` refuses it: no client file owns a URL for "Docker".
 - **Read tools**: `list_emails` (with folder resolution and cursor paging),
   `search_emails`, `get_email`, `list_attachments` (metadata only),
   `download_attachment` (confined to an allowed directory, symlink-checked, base64
@@ -35,6 +52,16 @@ agent can drive. Everything published before this was the Bun CLI.
 - **`config <client> [--write]`**, printing or idempotently installing the
   snippet for Pi, Claude Code, Claude Desktop, Codex, VS Code, Cursor, Gemini
   CLI, OpenCode and generic stdio clients, each in its own format.
+- **Leveled logs on stderr.** `OUTLOOK_LOG_LEVEL` (`debug`, `info` — the default
+  — `warn`, `error`, `silent`) and `OUTLOOK_LOG_FORMAT` (`text`, `json`) over
+  pino: one line per command, tool call, resource read, sign-in and HTTP session,
+  with the Microsoft Graph calls, token-cache reads and state-file transitions at
+  `debug`, each timed. stdout is never touched, in either format. Mail stays out
+  of it — no token, body or attachment content at any level (redacted before
+  serialisation, so the human format cannot leak what the JSON one hides), sender
+  addresses masked and ids shortened until somebody asks for `debug`. Scoped
+  loggers (`cli`, `mcp`, `http`, `auth`, `graph`, `login`, `storage`, `client`) and
+  a session id on every line from an HTTP session say who did what.
 - **Atomic token-cache writes**, and one re-read-and-retry on a silent-refresh
   failure, so several clients can share `~/.outlook-skill/msal-cache.json`.
 - **`bin`: `outlook-mcp`**, `files`, `engines`, and a `prepare` build, for
@@ -43,6 +70,10 @@ agent can drive. Everything published before this was the Bun CLI.
 - **Documentation**: `SECURITY.md`, this file, `docs/clients.md` with a
   per-client install matrix, `skills/outlook-skill/references/setup.md` for the
   Entra ID registration, and a rewritten README.
+- **CI for the image** in `.github/workflows/docker.yml`: build, run, and check
+  the health route, the `Host`/`Origin` refusals, and that the layer carries no
+  `.env` and no session, on every pull request; multi-arch push to GHCR on the
+  default branch (`latest`, `sha-…`) and on `v*` tags (semver).
 - **CI** on Node 22 and 24 through format, typecheck, unit tests on the sources,
   build, and end-to-end tests against the built entry; a Node 20 job that only
   smoke-tests the build, since native type stripping does not exist there; a
@@ -51,6 +82,9 @@ agent can drive. Everything published before this was the Bun CLI.
 
 ### Changed
 
+- **`serve` is a real command now.** It used to be intercepted before the CLI
+  saw it, which meant `serve --help` started a server instead of printing help.
+  No arguments still serves stdio exactly as before, and so does a bare `serve`.
 - **Node only.** Bun is gone: no `Bun.` identifier, no `bun.lock`, no
   `bunfig.toml`. Sources run directly under Node's native type stripping
   (Node 22.18+ or 23.6+), and `npm run build` emits `dist/` for Node 20.
@@ -97,8 +131,10 @@ Findings from review of this branch, all of them shipped before tagging.
   included, but the file name came from the sender's file and was joined
   unchecked, so `../` wrote outside the attachment directory. Names are reduced
   to a safe basename and the resolved path is re-checked before the write.
-- **`OUTLOOK_MCP_LOG_LEVEL` is gone** rather than implemented. It was documented,
-  defaulted and tested, and nothing read it, because there is no logger.
+- **`OUTLOOK_MCP_LOG_LEVEL` is gone**, and there is a logger now: the knob lives
+  on as `OUTLOOK_LOG_LEVEL`, read by every surface, with the dead name neither
+  documented nor honoured (a test pins that, so a variable nobody reads cannot be
+  advertised as a control again).
 - Smaller: leftover plaintext cache copies are swept, the sign-in state file is
   `0600` in a `0700` directory, `logout` clears the sign-in state too, page
   limits and tool-name lists have one source instead of four, `list_drafts` no

@@ -28,6 +28,10 @@ import {
   withoutUndefined,
 } from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
+import { logger } from "./core/log.ts";
+
+/** The one place this server writes a file: the attachment directory. */
+const log = logger("storage");
 
 /**
  * The whole tool surface, in one place, consumed by the MCP server and the CLI
@@ -182,6 +186,17 @@ function writeNoFollow(path: string, bytes: Buffer): void {
   }
 }
 
+/**
+ * Every refusal in `attachmentPath` goes through here. They are the checks that
+ * stand between a sender's file name and this machine's disk, so when one bites
+ * it is worth a warning even though the caller is answered with a reason: a
+ * refusal is either a hostile name or a configuration nobody meant.
+ */
+function refuse(message: string): never {
+  log.warn("attachment write refused", { reason: message });
+  throw new Error(message);
+}
+
 function attachmentPath(
   config: Config,
   dir: string | undefined,
@@ -192,7 +207,7 @@ function attachmentPath(
     path === root || path.startsWith(root + sep);
   const target = dir ? resolve(base, dir) : base;
   if (!inside(target, base))
-    throw new Error(
+    refuse(
       `dir must be inside the attachment directory ${base}, not ${target}.`,
     );
   mkdirSync(target, { recursive: true, mode: 0o700 });
@@ -200,7 +215,7 @@ function attachmentPath(
   const realBase = realpathSync(base);
   const realTarget = realpathSync(target);
   if (!inside(realTarget, realBase))
-    throw new Error(
+    refuse(
       `dir must be inside the attachment directory ${realBase}, not ${realTarget}.`,
     );
   const name = safeFileName(rawName);
@@ -210,20 +225,20 @@ function attachmentPath(
   // a symlink there would carry the write with it, dangling or not. Where nothing
   // exists yet, the directory's own real path answers for the file.
   if (!inside(path, target))
-    throw new Error(
+    refuse(
       `${name} would be written outside the attachment directory ${base}, not at ${path}.`,
     );
   // A link at the destination goes wherever its author chose, and `realpath`
   // cannot even resolve a dangling one, so no link is written through at all.
   const waiting = lstatSync(path, { throwIfNoEntry: false });
   if (waiting?.isSymbolicLink())
-    throw new Error(
+    refuse(
       `${name} is already a symlink, so writing it could land outside the attachment directory ${realBase}.`,
     );
   const real =
     waiting === undefined ? join(realTarget, name) : realpathSync(path);
   if (!inside(real, realBase))
-    throw new Error(
+    refuse(
       `${name} would be written outside the attachment directory ${realBase}, not at ${real}.`,
     );
   return { path, name };
@@ -364,8 +379,21 @@ const coreTools: Tool[] = [
       );
       const bytes = Buffer.from(attachment.contentBytes ?? "", "base64");
       writeNoFollow(path, bytes);
+      // A file landed on this machine, which is the only side effect this server
+      // has. The directory is the operator's own, so the name of it is theirs to
+      // read at `debug`; what happened is one line either way.
+      log.info("attachment saved", {
+        bytes: bytes.byteLength,
+        contentType: attachment.contentType,
+        ...(log.detailed ? { path } : {}),
+      });
       const inline =
         encoding === "base64" && bytes.byteLength <= maxInlineBytes;
+      if (encoding === "base64" && !inline)
+        log.info("inline base64 refused over the cap", {
+          bytes: bytes.byteLength,
+          capBytes: maxInlineBytes,
+        });
       return {
         name,
         path,

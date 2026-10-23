@@ -50,6 +50,9 @@ jobs:
       - run: npm run build
       - run: node dist/index.js --help
       - run: node dist/index.js config vscode
+      # The image runs `serve --http` on whatever Node it lands on, so the flag
+      # has to exist in the built entry, not only in the sources.
+      - run: node dist/index.js serve --help | grep -q -- '--http'
       - run: node dist/index.js emails list --limit 0 2>&1 | grep -q 'must be an integer'
 
   guards:

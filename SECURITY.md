@@ -113,7 +113,74 @@ minutes for a person; it writes the verification URL and user code to the state
 file and returns. Codes are short-lived and are not tokens. `logout` deletes the
 token cache and that state file together, so a failure recorded by an old session
 cannot be read as a fresh one by the next. The MCP server keeps stdout clean for
-JSON-RPC and sends diagnostics to stderr, and nothing logs mail content.
+JSON-RPC and sends diagnostics to stderr.
+
+## What the logs say, and what they never say
+
+Every command, tool call, sign-in and HTTP session writes one line to stderr —
+never to stdout, which is a protocol on stdio and a `jq` input in a shell.
+`OUTLOOK_LOG_LEVEL` is `debug`, `info` (the default), `warn`, `error` or
+`silent`; `OUTLOOK_LOG_FORMAT` chooses a line for a terminal or one JSON record
+per line for a collector.
+
+A log line is a copy of a mailbox, and stderr is not owner-only the way
+`~/.outlook-skill/msal-cache.json` is: a container log, a CI artefact and a
+pasted terminal are all places mail can end up without anyone deciding that. So:
+
+- **Never written, at any level:** an access or refresh token, an `Authorization`
+  header, a message body, or attachment content. Those keys are struck out of a
+  record before it is serialised, and the human format is rendered from that same
+  serialised record — so there is no path that bypasses it. A test asserts it.
+- **`debug` only, because somebody asked for it:** message and attachment ids, a
+  Microsoft Graph path, a search query, a recipient list, a sender address in
+  full, a saved attachment's path, and an error stack.
+- **The default level:** what happened and how much of it — the tool, the folder,
+  a count of items, bytes, milliseconds, a session id, a masked address
+  (`v***@example.com`), an id shortened to eight characters, a query as its
+  length.
+
+The sign-in state file carries the verification URL and user code, which it must
+for a polling client to find them; a log line masks that code until `debug`, and
+no state file or log line carries a token.
+
+## The HTTP port, and what it costs
+
+`serve --http` — which is what the Docker image runs — puts the same server behind
+a listening socket. That is the one part of this project where something other
+than a process you started can reach a mailbox, so it is bounded deliberately:
+
+- **It authenticates nobody.** Anything that can open the socket can read the
+  mailbox and write drafts, exactly as the stdio server can. It is a local
+  transport, not a hosted one: no tokens, no users, no TLS, and nothing in this
+  repository adds them. Do not put it behind a proxy, and do not publish it.
+- **The default bind is loopback**, `127.0.0.1:3939`, and the container's wildcard
+  bind is answered on the host side by `-p 127.0.0.1:3939:3939`, which keeps the
+  port off the network. Plain `-p 3939:3939` puts it on your LAN.
+- **Every request is admitted by `Host` and `Origin`.** The `Host` must be a
+  loopback address or a name in `OUTLOOK_MCP_ALLOWED_HOSTS`; a browser `Origin`
+  must be the same origin the request was addressed as, or one in
+  `OUTLOOK_MCP_ALLOWED_ORIGINS`. That is the DNS-rebinding defence: without it, a
+  page you merely visited could re-resolve `localhost` to your own machine and
+  read your mail through a port you left open for your agent. A request with no
+  `Origin` is a native MCP client, and is served on the strength of its `Host`
+  alone.
+- **The response body says nothing useful to a stranger** — a refusal names the
+  variable to set, nothing about the mailbox — and `/health` reports only the
+  version, the mode and a session count, never mail and never an account.
+- **Bodies are capped at 4 MiB** and sessions at 32, with an idle session retired
+  after `OUTLOOK_MCP_SESSION_IDLE_MINUTES` (default a day) once nothing is
+  connected to it, so a client that disconnects without saying so cannot pile up
+  server instances for the life of the container.
+
+What running it in a container does change is where the secrets live: the token
+cache moves to `/data`, so the volume holds a refreshable session. Give that
+volume to no other container, do not bake `.env` into an image (the entry reads
+one from its working directory, and `docker history` keeps layers), and remember
+that a container running as root leaves files owned by root in it.
+
+Stdio remains the default transport, and the default for a reason: a process a
+client launches, on pipes, with no socket at all, is a smaller surface than a
+port. If you do not need the container, do not run it.
 
 ## Reporting a problem
 

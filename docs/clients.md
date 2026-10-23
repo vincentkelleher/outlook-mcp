@@ -31,8 +31,8 @@ node dist/index.js config claude-code --write
 ```
 
 Clients: `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`,
-`gemini-cli`, `opencode`, `generic`. `--write` merges the entry into that
-client's user configuration file: it creates the file when it is missing, keeps
+`gemini-cli`, `opencode`, `docker`, `generic`. `--write` merges the entry into
+that client's user configuration file: it creates the file when it is missing, keeps
 every unrelated key, is idempotent, and refuses with a clear message when an
 existing file does not parse — it never overwrites a configuration file it cannot
 parse. When a client's file location is not one we can state with confidence,
@@ -308,6 +308,43 @@ plus args:
 }
 ```
 
+## Docker
+
+```bash
+docker run -d --name outlook-skill \
+  -p 127.0.0.1:3939:3939 \
+  -v outlook-skill-home:/data \
+  -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
+  ghcr.io/vincentkelleher/outlook-skill:0.1.0
+```
+
+The container serves Streamable HTTP, so the entry a client reads is a URL and
+not a command — there is no `node`, no path, and no client id in it:
+
+```json
+{
+  "mcpServers": {
+    "outlook": { "type": "http", "url": "http://127.0.0.1:3939/mcp" }
+  }
+}
+```
+
+`config docker` prints exactly that, with the run command, the sign-in command
+(`docker exec outlook-skill outlook login`) and the loopback warning around it.
+`--write` refuses for this one, honestly: there is no client file that owns a URL
+for "Docker", and the client that consumes it is named by whoever asks.
+
+Which of the entries above take a remote server is the client's business, not
+this one's; the `type: "http"` spelling is the plain Streamable HTTP form that
+Claude Code, VS Code and Pi document, and `config docker` says out loud that it
+checked none of your clients for this particular shape. The client list elsewhere
+on this page is for stdio.
+
+Two things differ operationally, and neither is a secret: the session lives in the
+`/data` volume rather than in `~/.outlook-skill`, and read-only mode is set on the
+container (`-e OUTLOOK_MCP_READONLY=1`), not per command — which is the same rule
+as everywhere else, one decision made before any command runs.
+
 ## Any other client
 
 ```json
@@ -322,9 +359,10 @@ plus args:
 }
 ```
 
-With no arguments the server speaks MCP over stdio; `serve` says so explicitly.
-Everything else on stdout is a diagnostic, and `node <entry> --help` is the CLI.
-If your harness cannot expand `${VAR}`, put the literal client id there.
+With no arguments the server speaks MCP over stdio; `serve` says so explicitly,
+and `serve --http` serves it on `http://<host>:3939/mcp` instead. Everything else
+on stdout is a diagnostic, and `node <entry> --help` is the CLI. If your harness
+cannot expand `${VAR}`, put the literal client id there.
 
 ## What was verified, and what was not
 
@@ -337,8 +375,8 @@ modes in the matrix above.
 Also checked against npm's documentation: the git-specifier and tarball
 behaviour, `prepare`, `files` versus `.gitignore`, and `engines`.
 
-**Not verified**, and marked as such wherever it appears: Claude Desktop's file
-location, Cursor's location and shape, Gemini CLI's flag names, OpenCode's key
+**Not verified**, and marked as such wherever it appears: the `docker` remote
+entry shape, Claude Desktop's file location, Cursor's location and shape, Gemini CLI's flag names, OpenCode's key
 names, the absolute path of the VS Code user-profile `mcp.json`, whether
 `${env:NAME}` expands in an MCP config, whether `npx` re-clones a git specifier,
 and any Codex or VS Code tool-name prefix.

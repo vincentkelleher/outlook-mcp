@@ -1,0 +1,130 @@
+name: Docker
+
+# The image is published from tags, built on every push to the default branch,
+# and built and smoke-tested on every pull request, so a pull request that breaks
+# the container is found there and not in a release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Lower case, as GHCR requires: `github.repository` already is for this repo,
+  # and the name here is the one the client snippets print.
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  smoke:
+    name: Build and run it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # One architecture, loaded into the runner's Docker, because the steps
+      # below run the image rather than read it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: outlook-skill:smoke
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=min,scope=smoke
+
+      - name: It serves, and says so
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke \
+            -p 127.0.0.1:3939:3939 \
+            -v outlook-skill-smoke:/data \
+            -e OUTLOOK_OAUTH_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
+            outlook-skill:smoke
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3939/health > body.json; then break; fi
+            sleep 1
+          done
+          docker logs smoke
+          cat body.json
+          grep -q '"status":"ok"' body.json
+          grep -q '"readonly":false' body.json
+          docker logs smoke | grep -q 'Outlook MCP serving on http://127.0.0.1:3939/mcp'
+
+      - name: A name that is not this machine's is refused
+        # The DNS rebinding rule, checked against the real container behind a
+        # real published port: without it, any page a person visits could talk
+        # to their own mailbox on 127.0.0.1.
+        run: |
+          set -uo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'Host: evil.example:3939' http://127.0.0.1:3939/health)
+          echo "Host: evil.example answered $code"
+          test "$code" = "403"
+          origin=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'Origin: http://evil.example' http://127.0.0.1:3939/health)
+          echo "Origin: http://evil.example answered $origin"
+          test "$origin" = "403"
+
+      - name: The CLI in the image is the CLI in the README
+        run: |
+          set -euo pipefail
+          docker run --rm outlook-skill:smoke --help | grep -q 'serve \[options\]'
+          # `docker exec` starts a program, not the entrypoint, so this is the
+          # form the README gives.
+          docker exec smoke outlook config docker | grep -q '127.0.0.1:3939/mcp'
+          # A `.env` in the layer would configure every container built from it,
+          # because the entry reads one from its working directory.
+          docker run --rm --entrypoint sh outlook-skill:smoke -c 'test ! -e /app/.env'
+          # And it ships no session: /data is empty until somebody signs in, and
+          # nothing is built into that volume.
+          test -z "$(docker run --rm --entrypoint sh outlook-skill:smoke -c 'ls -A /data')"
+
+      - name: Why it died
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs smoke || true
+
+  image:
+    name: Publish
+    needs: smoke
+    # A pull request has no reason to write to the registry, and no right to.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push both architectures
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=min,scope=smoke
+          annotations: ${{ steps.meta.outputs.annotations }}

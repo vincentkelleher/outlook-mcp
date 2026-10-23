@@ -1,8 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homeDir } from "./config.ts";
+import { defaultHttpPort, homeDir, packageVersion } from "./config.ts";
+import { mcpPath } from "./http.ts";
+import { logger } from "./log.ts";
 import type { Env } from "./config.ts";
+
+/** Someone else's configuration file is about to change, so say which and how. */
+const log = logger("client");
 
 /**
  * Per-client MCP configuration: the single place that knows each client's file
@@ -21,6 +26,8 @@ const serverName = "outlook";
 const envName = "OUTLOOK_OAUTH_CLIENT_ID";
 /** Stands in for a client id the process does not have. Never a secret. */
 const clientIdPlaceholder = "your-application-client-id";
+/** Where the published image lives; `OUTLOOK_MCP_IMAGE` overrides it wholesale. */
+const defaultImage = `ghcr.io/vincentkelleher/outlook-skill:${packageVersion()}`;
 
 export const clientIds = [
   "pi",
@@ -31,6 +38,7 @@ export const clientIds = [
   "cursor",
   "gemini-cli",
   "opencode",
+  "docker",
   "generic",
 ] as const;
 
@@ -43,6 +51,9 @@ type Resolved = {
   home: string;
   appData: string;
   platform: NodeJS.Platform;
+  /** The port the HTTP server binds, and the image that serves it. */
+  port: number;
+  image: string;
 };
 
 export type RenderInput = {
@@ -77,7 +88,11 @@ export type WriteOutcome = {
 type Definition = {
   label: string;
   destination: string;
-  notes: string[];
+  /**
+   * What to tell the user. A note is prose, or a command that only makes sense
+   * once the port and the image are known.
+   */
+  notes: (string | ((target: Resolved) => string))[];
   /**
    * What was not checked against this client's own official documentation, and
    * so must be said out loud. Absence is the record of a verification: the shape
@@ -109,6 +124,17 @@ function stdioEntry(
     args: [target.entry],
     env: { [envName]: envValue(target, expand) },
   };
+}
+
+/** The container command that puts a server behind the URL `docker` prints. */
+function dockerRun(target: Resolved): string {
+  return [
+    "docker run -d --name outlook-skill",
+    `-p 127.0.0.1:${target.port}:${target.port}`,
+    "-v outlook-skill-home:/data",
+    `-e ${envName}=${target.clientId || clientIdPlaceholder}`,
+    target.image,
+  ].join(" ");
 }
 
 /**
@@ -254,6 +280,26 @@ const definitions: Record<ClientId, Definition> = {
       enabled: true,
     }),
   },
+  docker: {
+    label: "Docker",
+    destination:
+      "any client that reaches an MCP server over HTTP, with the server itself running in a container",
+    notes: [
+      (target) => `Start the container first: ${dockerRun(target)}`,
+      // The device-code flow needs no port of its own, which is what lets a
+      // container sign a mailbox in without a browser inside it.
+      "Then sign in through it: docker exec outlook-skill outlook login prints the URL and code a person enters in any browser on the host.",
+      "The client id is given to the container, not to this entry, so nothing written here carries one.",
+      "Nothing on that port authenticates: publish it on 127.0.0.1, and name every other Host you reach it by in the container's OUTLOOK_MCP_ALLOWED_HOSTS.",
+    ],
+    unverified:
+      "Unverified: this is the plain Streamable HTTP entry shape; check the key names against the client's own documentation for a remote server.",
+    file: { kind: "json", rootKey: "mcpServers" },
+    entry: (target) => ({
+      type: "http",
+      url: `http://127.0.0.1:${target.port}${mcpPath}`,
+    }),
+  },
   generic: {
     label: "Any other MCP client",
     destination:
@@ -299,12 +345,15 @@ export function resolveEntry(root = packageRoot): {
 
 function resolveInput(input: RenderInput): Resolved {
   const env = input.env ?? process.env;
+  const port = Number((env.OUTLOOK_MCP_PORT ?? "").trim()) || defaultHttpPort;
   return {
     entry: input.entry,
     clientId: input.clientId,
     home: homeDir(env),
     appData: env.APPDATA || join(homeDir(env), "AppData", "Roaming"),
     platform: input.platform ?? process.platform,
+    port,
+    image: env.OUTLOOK_MCP_IMAGE?.trim() || defaultImage,
   };
 }
 
@@ -318,7 +367,9 @@ export function renderClient(client: ClientId, input: RenderInput): Rendered {
       : (definition.file?.rootKey ?? "mcpServers");
   const entry = definition.entry?.(target);
   const command = definition.command?.(target);
-  const notes = [...definition.notes];
+  const notes = definition.notes.map((note) =>
+    typeof note === "string" ? note : note(target),
+  );
   if (definition.unverified) notes.push(definition.unverified);
   if (path)
     notes.push(
@@ -488,15 +539,28 @@ export function installClient(
   input: RenderInput,
 ): WriteOutcome {
   const rendered = renderClient(client, input);
-  if (!rendered.path)
+  if (!rendered.path) {
+    log.warn("this client has no configuration file this command can write", {
+      client,
+    });
     throw new Error(
       `${rendered.label} has no configuration file this command can write to. Run the command without --write and paste the snippet.`,
     );
-  if (rendered.kind === "toml")
-    return mergeToml(rendered.path, rendered.snippet);
-  return mergeJson(
-    rendered.path,
-    rendered.rootKey ?? "mcpServers",
-    rendered.entry ?? {},
-  );
+  }
+  const outcome =
+    rendered.kind === "toml"
+      ? mergeToml(rendered.path, rendered.snippet)
+      : mergeJson(
+          rendered.path,
+          rendered.rootKey ?? "mcpServers",
+          rendered.entry ?? {},
+        );
+  // `unchanged` is the ordinary second run, and still worth the line: it is the
+  // answer to "did my configuration actually get written?"
+  log.info(`client configuration ${outcome.status}`, {
+    client,
+    path: outcome.path,
+    ...(log.detailed && input.clientId ? { clientId: input.clientId } : {}),
+  });
+  return outcome;
 }

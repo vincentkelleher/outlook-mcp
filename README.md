@@ -24,6 +24,10 @@ refresh, and JSON that is easy for people and agents to use.
   client that can launch a stdio server gets the tools: Claude Code, Claude
   Desktop, Codex, VS Code and Copilot, Cursor, Gemini CLI, OpenCode, Pi, and
   plain harnesses of your own.
+- **Or in a container, over HTTP.** `serve --http` speaks the same protocol over
+  a Streamable HTTP endpoint, which is what the published image runs: one
+  long-lived container, a URL any client can reach. See
+  [Run it in a container](#run-it-in-a-container).
 - **A CLI for humans and for clients without MCP.** The same core, driven by
   `node dist/index.js emails list`.
 - **One tool registry, defined once** in `src/tools.ts` and consumed by both
@@ -59,9 +63,68 @@ node dist/index.js config claude-code --write   # merge it into the user config
 ```
 
 Clients: `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`,
-`gemini-cli`, `opencode`, `generic`. The per-client matrix, the add commands,
+`gemini-cli`, `opencode`, `docker`, `generic`. The per-client matrix, the add commands,
 the timeout units and the honest list of what is unverified live in
 [docs/clients.md](docs/clients.md).
+
+## Run it in a container
+
+The image runs the server over Streamable HTTP on port 3939 and keeps nothing on
+its own filesystem: the session, the sign-in state and downloaded attachments all
+live in `/data`, which is a volume.
+
+```bash
+docker run -d --name outlook-skill \
+  -p 127.0.0.1:3939:3939 \
+  -v outlook-skill-home:/data \
+  -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
+  ghcr.io/vincentkelleher/outlook-skill:0.1.0
+
+docker logs outlook-skill
+# Outlook MCP serving on http://127.0.0.1:3939/mcp
+```
+
+Then sign in through it. The device-code flow needs no port of its own, so a
+browser on the host is enough and nothing has to be exposed for it:
+
+```bash
+docker exec outlook-skill outlook login
+# To sign in: https://microsoft.com/devicelogin  Enter the code ABC-XYZ123
+```
+
+And point a client at the URL — `node dist/index.js config docker` (or
+`docker exec outlook-skill outlook config docker`) prints it:
+
+```json
+{
+  "mcpServers": {
+    "outlook": { "type": "http", "url": "http://127.0.0.1:3939/mcp" }
+  }
+}
+```
+
+Four things about that command line are important:
+
+- **`-p 127.0.0.1:3939:3939`, not `-p 3939:3939`.** The server inside the
+  container binds the container's wildcard interface, because a loopback bind
+  there is unreachable through a published port. The host side of the mapping is
+  where the port stays local. Plain `-p` publishes it to your network, where
+  `Host` and `Origin` checks will still refuse strangers — but refuse them from
+  a port you did not mean to open.
+- **`-v outlook-skill-home:/data`, or you sign in again every time.** The token
+  cache lives there, with the sign-in state. Two containers sharing a volume
+  share one session, which is how `login` and `serve` find each other.
+- **`OUTLOOK_OAUTH_CLIENT_ID` goes to the container.** The client entry carries a
+  URL and no credentials; the app registration is the container's business.
+- **Nothing on that port authenticates.** It is meant for your own machine.
+  `GET /health` answers without touching Microsoft, so `docker ps` can report on
+  it; `docker stop` takes it down in well under a second.
+
+Build it yourself with `docker build -t outlook-skill .` — the same Dockerfile CI
+publishes from. To use the image over stdio instead, drop `--http`:
+`docker run -i --rm -v outlook-skill-home:/data -e OUTLOOK_OAUTH_CLIENT_ID …
+outlook-skill serve`, which is the shape of it for a client that launches stdio
+servers and will not take a URL.
 
 ## Sign in
 
@@ -148,23 +211,99 @@ that is what the CLI always did; the MCP tools never do.
 
 ## Configuration
 
-| Variable                     | Default                  | Purpose                                                                                          |
-| ---------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `OUTLOOK_OAUTH_CLIENT_ID`    | — (required)             | The Application (client) ID from your app registration.                                          |
-| `OUTLOOK_OAUTH_TENANT`       | `consumers`              | `common` or `organizations` for a work or school mailbox.                                        |
-| `OUTLOOK_SKILL_HOME`         | `~/.outlook-skill`       | Where the token cache lives.                                                                     |
-| `OUTLOOK_MCP_STATE_DIR`      | `~/.outlook-skill/state` | Sign-in state: the URL, the code, the last error. Never a token.                                 |
-| `OUTLOOK_MCP_ATTACHMENT_DIR` | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                           |
-| `OUTLOOK_MCP_READONLY`       | unset                    | Read-only: hides all draft tools and asks Microsoft for `Mail.Read` instead of `Mail.ReadWrite`. |
+| Variable                           | Default                  | Purpose                                                                                          |
+| ---------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                          |
+| `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                        |
+| `OUTLOOK_SKILL_HOME`               | `~/.outlook-skill`       | Where the token cache lives.                                                                     |
+| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-skill/state` | Sign-in state: the URL, the code, the last error. Never a token.                                 |
+| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                           |
+| `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides all draft tools and asks Microsoft for `Mail.Read` instead of `Mail.ReadWrite`. |
+| `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.        |
+| `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one.    |
+| `OUTLOOK_MCP_ALLOWED_HOSTS`        | unset                    | Extra `Host` names to serve, comma-separated, for a server reached by a name of your own.        |
+| `OUTLOOK_MCP_ALLOWED_ORIGINS`      | unset                    | Extra browser origins, comma-separated, beyond the same origin.                                  |
+| `OUTLOOK_MCP_SESSION_IDLE_MINUTES` | `1440`                   | `serve --http` only: how long an HTTP session with nothing connected survives.                   |
+| `OUTLOOK_MCP_IMAGE`                | the published GHCR image | Which image `config docker` names, if you mirror it elsewhere.                                   |
+| `OUTLOOK_LOG_LEVEL`                | `info`                   | `debug`, `info`, `warn`, `error` or `silent`. Every log line goes to stderr.                     |
+| `OUTLOOK_LOG_FORMAT`               | `text`                   | `text` for a terminal, `json` for a log collector.                                               |
 
 A `.env` in the working directory is read for you, and real environment
 variables win over it.
+
+The four HTTP variables that decide who may connect — `OUTLOOK_MCP_HOST`,
+`OUTLOOK_MCP_ALLOWED_HOSTS`, `OUTLOOK_MCP_ALLOWED_ORIGINS` and the bind itself —
+are checked on every request, because the transport authenticates nobody. The
+`Host` must be a loopback address or one you named, and a browser `Origin` must
+be the origin the request was addressed as; a request carrying neither header is
+a native MCP client, which is the ordinary case. Without that rule, a page any
+browser visits could re-resolve `localhost` and read your mail through a port you
+left open, which is what [SECURITY.md](SECURITY.md) is about. So: a container on
+`0.0.0.0` behind `-p 127.0.0.1:3939:3939` is local, and a name that is not the
+machine's own is refused from either side.
 
 `OUTLOOK_MCP_READONLY` is an environment variable and deliberately not a flag. A
 flag on `serve` but not on `login` would leave a token holding `Mail.ReadWrite`
 behind a surface advertising read-only, or the reverse: one decision, made before
 any command runs, is the only way the permissions and the advertised tools cannot
 disagree. `auth_status` always reports the effective mode and scopes.
+
+### Reading the logs
+
+Every command, tool call, sign-in and session writes a line to stderr — never to
+stdout, which is JSON-RPC on stdio and JSON for `jq` in a shell:
+
+```bash
+OUTLOOK_LOG_LEVEL=debug node dist/index.js emails search "from:ana" --limit 5
+node dist/index.js serve --http 2> ~/outlook-mcp.log     # info by default
+tail -f ~/outlook-mcp.log
+```
+
+A line says when, how loud, which module, what happened, and the scalars that
+explain it. This is an MCP session over HTTP at the default level:
+
+```text
+2026-01-14T09:12:04.334Z info 41802 http: session opened sessionId=6f1c0b0e-2d59-4a1e-9a4f-3b7f0c2d1e55 sessions=1 readonly=false
+2026-01-14T09:12:04.356Z info 41802 mcp: tool call sessionId=6f1c0b0e-2d59-4a1e-9a4f-3b7f0c2d1e55 tool=search_emails queryChars=31 limit=5
+2026-01-14T09:12:04.357Z info 41802 auth: session check confirmed a session account=v***@example.com ms=188
+2026-01-14T09:12:05.087Z info 41802 mcp: tool call completed sessionId=6f1c0b0e-2d59-4a1e-9a4f-3b7f0c2d1e55 tool=search_emails ms=731 bytes=1642 items=5
+```
+
+and the same call at `debug`, where the Microsoft Graph request is visible:
+
+```text
+2026-01-14T09:12:04.361Z debug 41802 graph: graph request method=GET path=/me/messages ms=724 items=5
+```
+
+A sign-in that expired explains itself, and the recovery after it is two lines
+that read as one story:
+
+```text
+2026-01-14T09:12:41.203Z warn 41802 auth: silent token refresh failed account=v***@example.com problem=expired ms=412 reason="AADSTS700082: ..."
+2026-01-14T09:12:41.688Z info 41802 login: Microsoft issued a device code verificationUri=https://microsoft.com/devicelogin userCode=HKDF*** expiresIn=900
+```
+
+- **`info`** (the default): one line per command or tool call, per sign-in, per
+  HTTP session, plus every warning and error.
+- **`debug`**: adds the Microsoft Graph calls with their verb, path, duration and
+  item counts, the token-cache reads and writes, and the message ids, file paths,
+  search queries and full addresses a call named. That is the level for
+  reproducing one call.
+- **`warn`** and **`error`**: only what needs reading. A missing session is a
+  warning, because a tool call fixes it; anything else is an error, because
+  nobody has read it yet.
+- **`silent`**: nothing.
+
+Mail itself never travels in a log line at any level: no body, no attachment
+content, no token, ever — those keys are struck out before a line is written.
+Sender addresses are masked, a message id is shortened to eight characters and a
+search query appears as its length until you ask for `debug`, because stderr is
+not owner-only: a container log, a CI artefact and a pasted terminal are all
+places mail can end up without anyone deciding that.
+
+`OUTLOOK_LOG_FORMAT=json` writes one pino record per line for a collector
+(`level`, `time`, `pid`, `scope`, `msg`, then the fields); the same redaction
+applies, because the text format is rendered from that record.
 
 ## Security
 
@@ -209,23 +348,6 @@ and asserts the MCP handshake and that nothing but JSON-RPC reaches stdout. CI
 runs Node 22 and 24 through the whole list, Node 20 against the built entry only,
 and fails if a `Bun.` identifier appears anywhere in `src`, `test`, `e2e` or
 `skills`.
-
-## Coming from the Bun version
-
-Three things moved, and the rest of the CLI behaves as before:
-
-- `scripts/outlook.ts` is gone, split into `src/core/*` with the CLI and the MCP
-  server as thin surfaces on top. There is no compatibility shim: run
-  `node dist/index.js` where the old docs said `bun scripts/outlook.ts`.
-- The skill moved from the repository root to
-  `skills/outlook-skill/SKILL.md`, because a root `SKILL.md` shadows nested ones
-  for the installer. Its `name` is unchanged, so an existing install keeps
-  working; re-run `npx skills add` to pick up the new copy.
-- Sign-in now asks for `Mail.ReadWrite` instead of `Mail.Read`, because drafts
-  need it. Expect one consent prompt, then nothing. `OUTLOOK_MCP_READONLY=1`
-  goes back to `Mail.Read` and to a read-only tool list.
-
-[CHANGELOG.md](CHANGELOG.md) records the same list for 0.1.0.
 
 ## License
 

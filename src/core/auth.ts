@@ -21,6 +21,9 @@ import {
   noSessionMessage,
   sessionProblemMessage,
 } from "./errors.ts";
+import { address, errorFields, logger, stopwatch } from "./log.ts";
+
+const log = logger("auth");
 
 export type MsalAccount = { username?: string };
 export type MsalResult = { accessToken?: string };
@@ -95,8 +98,19 @@ function sweepStaleTempCaches(dir: string): void {
       continue;
     const path = join(dir, name);
     try {
-      if (Date.now() - statSync(path).mtimeMs < staleTempCacheAgeMs) continue;
+      const ageMs = Date.now() - statSync(path).mtimeMs;
+      if (ageMs < staleTempCacheAgeMs) continue;
       rmSync(path, { force: true });
+      // A warning, even though nothing failed: a plaintext copy of a token cache
+      // sat in that directory for an hour, and whoever reads a log line is the
+      // person who wants to know the cache directory holds more than the cache.
+      log.warn(
+        "removed a stale token-cache copy left by an interrupted write",
+        {
+          file: name,
+          ageHours: Math.round(ageMs / 3_600_000),
+        },
+      );
     } catch {
       // Another client claimed it in the meantime, or the directory moved.
     }
@@ -109,8 +123,18 @@ export function createCachePlugin(cachePath: string): ICachePlugin {
       // Before reading, so a copy left by a killed write is the first thing the
       // next session cleans up rather than something it never notices.
       sweepStaleTempCaches(dirname(cachePath));
-      if (existsSync(cachePath))
-        context.tokenCache.deserialize(readFileSync(cachePath, "utf8"));
+      if (!existsSync(cachePath)) {
+        log.debug("no token cache to read", { cachePath });
+        return;
+      }
+      const text = readFileSync(cachePath, "utf8");
+      context.tokenCache.deserialize(text);
+      // Its size, never its contents: which account is cached is in the status
+      // line, and a serialised cache is a token store.
+      log.debug("token cache read", {
+        cachePath,
+        bytes: Buffer.byteLength(text),
+      });
     },
     afterCacheAccess: async (context) => {
       if (!context.cacheHasChanged) return;
@@ -121,9 +145,14 @@ export function createCachePlugin(cachePath: string): ICachePlugin {
       // a reader never sees a half-written cache.
       const temp = tempCachePath(dir);
       try {
-        writeFileSync(temp, context.tokenCache.serialize(), { mode: 0o600 });
+        const serialized = context.tokenCache.serialize();
+        writeFileSync(temp, serialized, { mode: 0o600 });
         chmodSync(temp, 0o600);
         renameSync(temp, cachePath);
+        log.debug("token cache rewritten atomically", {
+          cachePath,
+          bytes: Buffer.byteLength(serialized),
+        });
       } finally {
         rmSync(temp, { force: true });
       }
@@ -172,33 +201,67 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
       onDeviceCode?: (info: DeviceCodeInfo) => void;
     } = {},
   ): Promise<string> {
+    const stop = stopwatch();
     const account = await firstAccount();
+    log.debug("access token requested", {
+      interactive: options.interactive === true,
+      cachedAccount: address(account?.username, log.detailed),
+      scopes,
+    });
     if (account) {
       try {
-        return await silent(account);
+        const fresh = await silent(account);
+        log.debug("silent token obtained", {
+          account: address(account.username, log.detailed),
+          ms: stop(),
+        });
+        return fresh;
       } catch (error) {
+        // Which of the three problems this is decides what the caller does next,
+        // and `sessionProblem` is the same decider the message is built with.
+        const reason = error instanceof Error ? error.message : String(error);
+        log.warn("silent token refresh failed", {
+          account: address(account.username, log.detailed),
+          problem: sessionProblem(reason),
+          ms: stop(),
+          ...errorFields(error, log.detailed),
+        });
         if (options.interactive) return deviceToken(options.onDeviceCode);
         // Another client may have refreshed the shared cache since we read it,
         // so re-read and retry once before asking anyone to sign in again.
         const refreshed = await firstAccount();
         if (refreshed) {
           try {
-            return await silent(refreshed);
+            const retried = await silent(refreshed);
+            // Info rather than debug: this is the recovery, and the warning
+            // before it is something nobody had to act on. Read together, the
+            // two lines say why a call that looked broken went through.
+            log.info(
+              "silent token obtained after re-reading the shared cache",
+              {
+                account: address(refreshed.username, log.detailed),
+                ms: stop(),
+              },
+            );
+            return retried;
           } catch {
             /* report the first failure */
           }
         }
-        const reason = error instanceof Error ? error.message : String(error);
         throw new AuthRequiredError(sessionProblemMessage(reason, scopes), {
           cause: error,
         });
       }
     }
-    if (!options.interactive) throw new AuthRequiredError(noSessionMessage);
+    if (!options.interactive) {
+      log.warn("no Outlook session to read");
+      throw new AuthRequiredError(noSessionMessage);
+    }
     return deviceToken(options.onDeviceCode);
   }
 
   async function deviceToken(onDeviceCode?: (info: DeviceCodeInfo) => void) {
+    log.info("device-code sign-in started", { scopes });
     const result = await msal().acquireTokenByDeviceCode({
       scopes,
       // A caller that takes the callback owns the prompt, so the flow is
@@ -222,21 +285,34 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
       authority: config.authority,
       cachePath: config.cachePath,
     };
+    const stop = stopwatch();
     const account = await firstAccount();
-    if (!account)
+    if (!account) {
+      log.info("session check found no cached account", { ms: stop() });
       return {
         signedIn: false,
         account: undefined,
         ...base,
       };
+    }
     try {
       await silent(account);
+      log.info("session check confirmed a session", {
+        account: address(account.username, log.detailed),
+        ms: stop(),
+      });
       return { signedIn: true, account: account.username, ...base };
     } catch (error) {
       // Which of the three this is has one decider, in errors.ts, so the tool
       // surface and the thrown message cannot disagree about whether the user
       // owes a consent or the network simply failed.
       const reason = error instanceof Error ? error.message : String(error);
+      log.warn("session check could not use the cached account", {
+        account: address(account.username, log.detailed),
+        problem: sessionProblem(reason),
+        ms: stop(),
+        ...errorFields(error, log.detailed),
+      });
       return {
         signedIn: false,
         account: account.username,
@@ -255,6 +331,11 @@ export function createAuth(deps: { config?: Config; msal?: MsalFactory } = {}) {
  * with a different account, or to the same one after a fix.
  */
 export function logout(config: Config = loadConfig()): void {
+  const stateFiles = loginStatePaths(config);
   rmSync(config.cachePath, { force: true });
-  for (const state of loginStatePaths(config)) rmSync(state, { force: true });
+  for (const state of stateFiles) rmSync(state, { force: true });
+  log.info("session deleted", {
+    cachePath: config.cachePath,
+    stateFiles: stateFiles.length,
+  });
 }

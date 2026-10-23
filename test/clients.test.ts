@@ -64,8 +64,21 @@ const writable = clientIds.filter(
   (client) => renderClient(client, target()).path !== undefined,
 );
 
-test("every client launches the built entry with node", () => {
-  for (const client of clientIds) {
+/**
+ * Clients that start the server themselves. `docker` is the one that does not:
+ * the container holds the entry, the process and the client id, and the entry
+ * it prints carries a URL instead.
+ */
+const launchedLocally = clientIds.filter((client) =>
+  snippet(client).includes("node"),
+);
+
+test("every client that starts the server launches the built entry with node", () => {
+  // The one client that does not launch anything is the container, checked below.
+  assert.deepEqual(launchedLocally, [
+    ...clientIds.filter((client) => client !== "docker"),
+  ]);
+  for (const client of launchedLocally) {
     const text = snippet(client);
     assert.ok(text.includes(entry), `${client} lost the entry path: ${text}`);
     assert.ok(
@@ -73,6 +86,47 @@ test("every client launches the built entry with node", () => {
       `${client} lost the node command: ${text}`,
     );
   }
+});
+
+test("Docker points at the URL the container serves, and says how to start it", () => {
+  const server = parsed("docker").mcpServers.outlook;
+  assert.equal(server.type, "http");
+  assert.equal(server.url, "http://127.0.0.1:3939/mcp");
+  // An entry the client reads carries no secret: the client id goes to the
+  // container, so the URL is all this one may hold.
+  assert.equal(JSON.stringify(server).includes(clientId), false);
+
+  const notes = noteText("docker");
+  assert.match(
+    notes,
+    /docker run -d --name outlook-skill -p 127\.0\.0\.1:3939:3939 -v outlook-skill-home:\/data -e OUTLOOK_OAUTH_CLIENT_ID=/,
+  );
+  assert.match(notes, /ghcr\.io\/vincentkelleher\/outlook-skill:\d/);
+  assert.match(notes, /docker exec outlook-skill outlook login/);
+  assert.match(notes, /OUTLOOK_MCP_ALLOWED_HOSTS/);
+  // There is no client file that holds a URL for "Docker": paste, do not write.
+  assert.match(
+    messageOf(() => installClient("docker", target())),
+    /has no configuration file this command can write to/,
+  );
+});
+
+test("the port and the image in the Docker entry follow the environment", () => {
+  const rendered = renderClient("docker", {
+    ...target(),
+    env: {
+      HOME: home(),
+      OUTLOOK_MCP_PORT: "4100",
+      OUTLOOK_MCP_IMAGE: "registry.internal/team/outlook:1.2.3",
+    },
+  });
+  assert.ok(
+    rendered.snippet.includes("http://127.0.0.1:4100/mcp"),
+    rendered.snippet,
+  );
+  const notes = rendered.notes.join("\n");
+  assert.ok(notes.includes("registry.internal/team/outlook:1.2.3"), notes);
+  assert.ok(notes.includes("-p 127.0.0.1:4100:4100"), notes);
 });
 
 test("Pi keeps the tools declared to the model and forwards the variable", () => {

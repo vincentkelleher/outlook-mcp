@@ -1,4 +1,7 @@
 import { Client } from "@microsoft/microsoft-graph-client";
+import { errorFields, logger, stopwatch } from "./log.ts";
+
+const log = logger("graph");
 
 type TokenProvider = () => Promise<string>;
 
@@ -124,6 +127,99 @@ function assertGraphCursor(cursor: string): string {
   return cursor;
 }
 
+/**
+ * The path without its query. The path is the useful half — it says which call
+ * was made, and a message id in it is what a person debugging needs — while a
+ * cursor repeats itself for as long as a caller pages, and is the one string in
+ * the URL that carries a signed token. These lines are `debug`, which is where
+ * the id belongs; the query belongs nowhere.
+ */
+function pathForLogging(path: string): string {
+  const query = path.indexOf("?");
+  const withoutQuery = query === -1 ? path : path.slice(0, query);
+  if (query === -1 && !withoutQuery.includes("://")) return withoutQuery;
+  // A cursor arrives as an absolute URL. The host is one this client refuses any
+  // other than, so it adds nothing to a line; the path is the page.
+  try {
+    return `${new URL(withoutQuery).pathname}${query === -1 ? "" : "?…"}`;
+  } catch {
+    return withoutQuery;
+  }
+}
+
+type BuilderMethod = (...args: unknown[]) => unknown;
+
+/**
+ * One Graph call, timed and counted.
+ *
+ * Every request this project makes goes through the chained builder, so the
+ * place to see all of them is a wrapper around that builder rather than forty
+ * call sites that a future method forgets to add. It records at `debug`: a
+ * successful page of mail is not news, and the failure that matters is already
+ * reported once, at the boundary, with the reason. What the wrapper adds at
+ * `debug` is which HTTP call that failure was.
+ *
+ * A builder method that returns the builder is part of the chain and keeps the
+ * wrapper; anything else is the terminal call, whose promise is timed.
+ */
+function traced(request: GraphRequest, path: string): GraphRequest {
+  const wrapper: GraphRequest = new Proxy(request, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") return value;
+      const chainable = value as BuilderMethod;
+      return (...args: unknown[]) => {
+        const verb = String(property).toUpperCase();
+        const outcome = chainable.apply(target, args);
+        if (outcome === target) return wrapper;
+        if (!(outcome instanceof Promise)) return outcome;
+        const stop = stopwatch();
+        return outcome.then(
+          (resolved: unknown) => {
+            log.debug("graph request", {
+              method: verb,
+              path: pathForLogging(path),
+              ms: stop(),
+              ...countsOf(resolved),
+            });
+            return resolved;
+          },
+          (error: unknown) => {
+            log.debug("graph request failed", {
+              method: verb,
+              path: pathForLogging(path),
+              ms: stop(),
+              ...errorFields(error, log.detailed),
+            });
+            throw error;
+          },
+        );
+      };
+    },
+  });
+  return wrapper;
+}
+
+/** How many items a response carried, when it is a collection. */
+function countsOf(response: unknown) {
+  if (Array.isArray(response)) return { items: response.length };
+  const value = (response as { value?: unknown[] })?.value;
+  return Array.isArray(value) ? { items: value.length } : {};
+}
+
+/**
+ * Wrap the client so `api(path)` hands back a traced builder. The HTTP verb is
+ * taken from the terminal method the chain ends in, which is the only verb this
+ * project's own code can choose.
+ */
+function tracedClient(client: GraphClient): GraphClient {
+  return {
+    api(path: string) {
+      return traced(client.api(path), path);
+    },
+  };
+}
+
 function sdkClient(token: TokenProvider): GraphClient {
   return Client.init({
     authProvider: async (done) => {
@@ -181,7 +277,9 @@ export function messagesPath(folder = "inbox") {
 }
 
 export function createGraph(deps: GraphDeps) {
-  const client = deps.client ? deps.client(deps.token) : sdkClient(deps.token);
+  const client = tracedClient(
+    deps.client ? deps.client(deps.token) : sdkClient(deps.token),
+  );
 
   async function page<T>(
     target: string,

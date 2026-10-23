@@ -30,6 +30,7 @@ import {
   maxPageSize,
   maxSearchPageSize,
 } from "../src/core/graph.ts";
+import { captureLogs } from "./support/log-capture.ts";
 
 const clientId = "00000000-0000-0000-0000-000000000000";
 const readAnnotations = {
@@ -1127,5 +1128,100 @@ test("a resource with no session explains the login step", async (t) => {
   await assert.rejects(
     client.readResource({ uri: "outlook://folders" }),
     /No Outlook session\..*Call the login tool.*retry this call\./s,
+  );
+});
+
+test("a tool call is one line as it starts and one as it ends, with no mail in either", async (t) => {
+  const client = await connect(t, fakeDeps(testConfig(t)).deps);
+  const logs = captureLogs({ level: "info" });
+  try {
+    const result = await call(client, "search_emails", {
+      query: 'from:"ana@example.com" subject:"payroll"',
+      limit: 5,
+    });
+    assert.equal(result.isError, undefined);
+  } finally {
+    logs.restore();
+  }
+
+  // The start line is what survives a call that never returns, so it carries what
+  // was asked rather than what came back; the end line carries how long and how
+  // much it cost.
+  const started = logs.matching(/mcp: tool call tool=/);
+  assert.equal(started.length, 1, logs.text());
+  assert.match(
+    started[0] ?? "",
+    /info \d+ mcp: tool call tool=search_emails queryChars=40 limit=5/,
+  );
+  const done = logs.matching(/mcp: tool call completed/);
+  assert.equal(done.length, 1, logs.text());
+  assert.match(done[0] ?? "", /ms=\d+ bytes=\d+ items=1/);
+
+  // The query is a person's search, and the subject it names is mail. What the
+  // line keeps is the only part that helps: how long the query was.
+  assert.ok(!logs.text().includes("payroll"), logs.text());
+  assert.ok(!logs.text().includes("ana@example"), logs.text());
+});
+
+test("a call that needs a session warns, and keeps its stack for debug", async (t) => {
+  const client = await connect(
+    t,
+    fakeDeps(testConfig(t), { session: false }).deps,
+  );
+
+  const info = captureLogs({ level: "info" });
+  try {
+    const result = await call(client, "list_emails");
+    assert.equal(result.isError, true);
+  } finally {
+    info.restore();
+  }
+  assert.match(
+    info.text(),
+    /warn \d+ mcp: tool call failed tool=list_emails ms=\d+ reason="No Outlook session\. Run the login command first\."/,
+  );
+  assert.ok(!info.text().includes("stack="), "no stack trace at info");
+
+  const debug = captureLogs({ level: "debug" });
+  try {
+    await call(client, "list_emails");
+  } finally {
+    debug.restore();
+  }
+  assert.match(debug.text(), /stack=\S*Error: No Outlook session/);
+});
+
+test("a resource read says what was read, and names a message only under debug", async (t) => {
+  const messageId = "AAMkAGI2TGV0MDE2OTY4NTUwMDAw";
+
+  const info = captureLogs({ level: "info" });
+  try {
+    await (
+      await connect(t, fakeDeps(testConfig(t)).deps)
+    ).readResource({
+      uri: `outlook://messages/${messageId}`,
+    });
+  } finally {
+    info.restore();
+  }
+  assert.match(
+    info.text(),
+    /mcp: resource read messageId=AAMkAGI2…28 resource=message ms=\d+/,
+  );
+  assert.ok(!info.text().includes(messageId), info.text());
+
+  const debug = captureLogs({ level: "debug" });
+  try {
+    await (
+      await connect(t, fakeDeps(testConfig(t)).deps)
+    ).readResource({
+      uri: "outlook://folders",
+    });
+  } finally {
+    debug.restore();
+  }
+  assert.match(
+    debug.text(),
+    /mcp: resource read resource=folders ms=\d+ items=1/,
   );
 });

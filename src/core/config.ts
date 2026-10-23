@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { logFormatFor, logLevelFor } from "./log.ts";
+import type { LogFormat, LogLevel } from "./log.ts";
 
 export type Env = Record<string, string | undefined>;
 
@@ -11,7 +13,74 @@ export type Config = {
   stateDir: string;
   attachmentDir: string;
   readonly: boolean;
+  /** Interface `serve --http` binds: a hostname or an address. */
+  httpHost: string;
+  httpPort: number;
+  /** Host header names accepted beyond the loopback ones. */
+  allowedHosts: string[];
+  /** Browser origins accepted beyond the same origin. */
+  allowedOrigins: string[];
+  /** How long an HTTP session with nothing connected lives, in minutes. */
+  sessionIdleMinutes: number;
+  /** stderr verbosity for every surface: CLI, stdio server and HTTP server. */
+  logLevel: LogLevel;
+  /** `text` for a person reading a terminal, `json` for a log collector. */
+  logFormat: LogFormat;
 };
+
+/**
+ * Defaults for `serve --http`. Nothing on that port authenticates, so the host
+ * defaults to loopback; the port is this server's own, chosen to be unlikely to
+ * clash.
+ */
+export const defaultHttpHost = "127.0.0.1";
+export const defaultHttpPort = 3939;
+
+/** The names a request may carry, from a comma-separated variable. */
+function list(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim().replace(/\/+$/, "").toLowerCase())
+    .filter((entry) => entry !== "");
+}
+
+/**
+ * A number from the environment is read once, here, and fails loudly:
+ * `server.listen(NaN)` answers something about a valid range, which tells
+ * nobody that `OUTLOOK_MCP_PORT=393a` is the cause.
+ */
+function numberFor(
+  name: string,
+  value: string | undefined,
+  fallback: number,
+  maximum: number,
+): number {
+  const raw = (value ?? "").trim();
+  if (raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum)
+    throw new Error(
+      `${name} must be an integer from 1 to ${maximum}, not "${value}".`,
+    );
+  return parsed;
+}
+
+/** One week of minutes: past that a session is a leak, not a setting. */
+const maxIdleMinutes = 7 * 24 * 60;
+/** A day without reconnecting is long enough for any client on a laptop. */
+export const defaultSessionIdleMinutes = 24 * 60;
+
+/** The package's own version: one read, shared by all that name this release. */
+export function packageVersion(): string {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+    return manifest.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 /**
  * Node does not load `.env`, so every reader starts here: the file is where a
@@ -98,5 +167,25 @@ export function loadConfig(env: Env = loadEnvFile()): Config {
     readonly: !["", "0", "false"].includes(
       (env.OUTLOOK_MCP_READONLY ?? "").toLowerCase(),
     ),
+    httpHost: (env.OUTLOOK_MCP_HOST ?? "").trim() || defaultHttpHost,
+    httpPort: numberFor(
+      "OUTLOOK_MCP_PORT",
+      env.OUTLOOK_MCP_PORT,
+      defaultHttpPort,
+      65535,
+    ),
+    allowedHosts: list(env.OUTLOOK_MCP_ALLOWED_HOSTS),
+    allowedOrigins: list(env.OUTLOOK_MCP_ALLOWED_ORIGINS),
+    sessionIdleMinutes: numberFor(
+      "OUTLOOK_MCP_SESSION_IDLE_MINUTES",
+      env.OUTLOOK_MCP_SESSION_IDLE_MINUTES,
+      defaultSessionIdleMinutes,
+      maxIdleMinutes,
+    ),
+    // Not `OUTLOOK_MCP_*`: the CLI is diagnosed the same way as the server, and
+    // a person running `emails list` to find out what is wrong needs the level
+    // that covers both commands.
+    logLevel: logLevelFor("OUTLOOK_LOG_LEVEL", env.OUTLOOK_LOG_LEVEL),
+    logFormat: logFormatFor("OUTLOOK_LOG_FORMAT", env.OUTLOOK_LOG_FORMAT),
   };
 }
