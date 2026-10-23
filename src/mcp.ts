@@ -3,10 +3,11 @@ import { format } from "node:util";
 import {
   McpServer,
   ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+  ProtocolError,
+  ProtocolErrorCode,
+} from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { scopesFor } from "./core/config.ts";
 import { AuthRequiredError } from "./core/errors.ts";
 import { defaultPageSize, maxPageSize } from "./core/graph.ts";
@@ -92,11 +93,11 @@ async function guard<T>(run: () => Promise<T>): Promise<T> {
     return await run();
   } catch (error) {
     if (error instanceof AuthRequiredError)
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         signInRequired(reasonOf(error)),
       );
-    throw new McpError(ErrorCode.InternalError, reasonOf(error));
+    throw new ProtocolError(ProtocolErrorCode.InternalError, reasonOf(error));
   }
 }
 
@@ -107,8 +108,8 @@ function inboxPage(uri: URL) {
   if (limit !== null) {
     const parsed = Number(limit);
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxPageSize)
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         `limit must be an integer from 1 to ${maxPageSize}.`,
       );
     top = parsed;
@@ -119,8 +120,8 @@ function inboxPage(uri: URL) {
 function messageIdOf(uri: URL): string {
   const id = decodeURIComponent(uri.pathname.replace(/^\/+/, ""));
   if (!id)
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidParams,
       `Resource ${uri.toString()} names no message.`,
     );
   return id;
@@ -225,6 +226,5 @@ export async function serve(deps: ToolDeps): Promise<void> {
     process.stderr.write(
       `Outlook MCP serving read-only (${scopesFor(true).join(", ")}); draft tools disabled\n`,
     );
-  const server = createServer(deps);
-  await server.connect(new StdioServerTransport());
+  serveStdio(() => createServer(deps));
 }

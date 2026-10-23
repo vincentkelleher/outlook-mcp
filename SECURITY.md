@@ -12,9 +12,26 @@ leaked from this repository, your shell history, or a config file. The
 registration must have **Allow public client flows** enabled for sign-in to work
 at all.
 
-The only network destinations are the Microsoft identity endpoint and Microsoft
-Graph: this code has no analytics, no update check, and no third-party call.
-Mail content reaches the model you are already talking to and nowhere else.
+The only outbound API destinations are the Microsoft identity endpoint and
+Microsoft Graph: this code has no analytics, no update check, and no third-party
+API call. MCP returns mail content to the connected client.
+
+## Local MCP transports
+
+Stdio is the default and opens no listening socket. `serve --transport http`
+explicitly enables Streamable HTTP at `http://127.0.0.1:3000/mcp` (port adjustable
+with `--port`). It binds only to IPv4 loopback and applies the SDK's localhost
+Host and Origin guards before handling requests, protecting against DNS
+rebinding and browser requests from non-local origins. Unknown paths return 404.
+
+**HTTP clients are not authenticated.** These guards are not authorization:
+local processes and allowed localhost browser origins can use the cached mailbox
+session, including the draft tools unless read-only mode is enabled. Only run it
+on a trusted single-user machine. Do not expose it via proxies, tunnels or port
+forwarding; remote hosting needs verified client authentication and TLS first.
+The handler is stateless per HTTP request, but all requests share the configured
+Outlook account, cache and sign-in state. SIGINT/SIGTERM close HTTP and active
+streams.
 
 ## Scopes, and the one it will never ask for
 

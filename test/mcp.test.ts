@@ -7,11 +7,16 @@ import {
   rmSync,
   symlinkSync,
 } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import { serveHttp } from "../src/http.ts";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { createServer } from "../src/mcp.ts";
 import {
   draftToolNames,
@@ -45,7 +50,7 @@ const writeAnnotations = {
   openWorldHint: true,
 };
 
-type TestContext = { after: (fn: () => void) => void };
+type TestContext = { after: (fn: () => void | Promise<void>) => void };
 
 function testConfig(t: TestContext): Config {
   const home = mkdtempSync(join(tmpdir(), "outlook-mcp-test-"));
@@ -291,6 +296,15 @@ async function connect(t: TestContext, deps: ToolDeps) {
   ]);
   t.after(() => void client.close());
   return client;
+}
+
+async function connectHttp(t: TestContext, deps: ToolDeps) {
+  const http = await serveHttp(deps, 0);
+  t.after(() => http.close());
+  const client = new Client({ name: "http-test", version: "0.0.0" });
+  t.after(() => client.close());
+  await client.connect(new StreamableHTTPClientTransport(new URL(http.url)));
+  return { client, url: http.url };
 }
 
 type Result = {
@@ -1127,5 +1141,126 @@ test("a resource with no session explains the login step", async (t) => {
   await assert.rejects(
     client.readResource({ uri: "outlook://folders" }),
     /No Outlook session\..*Call the login tool.*retry this call\./s,
+  );
+});
+
+test("Streamable HTTP exposes the same tools, resources and validation", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const { client } = await connectHttp(t, deps);
+  const stdio = await connect(t, deps);
+  // In-memory transport retains undefined keys that JSON omits on the wire.
+  const onWire = (value: unknown) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(await client.listTools(), onWire(await stdio.listTools()));
+  assert.deepEqual(
+    await client.listResources(),
+    onWire(await stdio.listResources()),
+  );
+  assert.deepEqual(
+    await client.listResourceTemplates(),
+    onWire(await stdio.listResourceTemplates()),
+  );
+
+  const listed = await call(client, "list_emails", { limit: 3 });
+  assert.equal(listed.isError, undefined);
+  assert.deepEqual(listed.structuredContent, JSON.parse(textOf(listed)));
+  assert.equal(calls.list.length, 1);
+  assert.equal((await call(client, "get_email", { id: 7 })).isError, true);
+  assert.deepEqual(calls.get, [], "invalid arguments never reach Graph");
+  const folders = await client.readResource({ uri: "outlook://folders" });
+  assert.deepEqual(JSON.parse(resourceTextOf(folders)), {
+    items: [{ id: "folder-1", displayName: "Inbox" }],
+  });
+  const draft = await call(client, "create_draft", { to: ["ana@example.com"] });
+  assert.equal(draft.isError, undefined);
+  assert.equal(JSON.parse(textOf(draft)).sent, false);
+});
+
+test("HTTP read-only mode hides drafts and auth failures keep their remediation", async (t) => {
+  const config = { ...testConfig(t), readonly: true };
+  const { deps, calls } = fakeDeps(config, { session: false });
+  const { client } = await connectHttp(t, deps);
+  assert.deepEqual(
+    (await client.listTools()).tools.map((tool) => tool.name).sort(),
+    [...readToolNames].sort(),
+  );
+  const result = await call(client, "list_emails");
+  assert.equal(result.isError, true);
+  assert.match(textOf(result), /Call the login tool/);
+  await assert.rejects(
+    call(client, "create_draft", { to: ["ana@example.com"] }),
+    /Tool create_draft not found/,
+  );
+  assert.deepEqual(calls.created, []);
+});
+
+test("HTTP guards reject untrusted Host and Origin headers and unknown routes", async (t) => {
+  const { client, url } = await connectHttp(t, fakeDeps(testConfig(t)).deps);
+  for (const headers of [
+    { Host: "evil.example" },
+    { Origin: "https://evil.example" },
+    { Origin: "not-an-origin" },
+  ]) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const req = request(url, { headers }, (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(status, 403);
+  }
+  const notFound = await fetch(new URL("/other", url));
+  assert.equal(notFound.status, 404);
+  await notFound.text();
+  assert.equal((await call(client, "auth_status")).isError, undefined);
+});
+
+test("HTTP supports legacy clients with streamed SSE responses and closes cleanly", async (t) => {
+  const http = await serveHttp(fakeDeps(testConfig(t)).deps, 0);
+  t.after(() => http.close());
+  const response = await fetch(http.url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "legacy-test", version: "0.0.0" },
+      },
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(
+    response.headers.get("content-type") ?? "",
+    /text\/event-stream/,
+  );
+  const body = await response.text();
+  assert.match(body, /data:.*"serverInfo"/);
+  assert.equal(
+    response.headers.has("mcp-session-id"),
+    false,
+    "HTTP is stateless",
+  );
+  await http.close();
+  await http.close();
+  await assert.rejects(fetch(http.url));
+});
+
+test("HTTP validates ports and reports a port already in use", async (t) => {
+  const { deps } = fakeDeps(testConfig(t));
+  for (const port of [-1, 65536, 1.5, NaN])
+    await assert.rejects(serveHttp(deps, port), /port must be an integer/);
+  const http = await serveHttp(deps, 0);
+  t.after(() => http.close());
+  await assert.rejects(
+    serveHttp(deps, Number(new URL(http.url).port)),
+    /EADDRINUSE/,
   );
 });

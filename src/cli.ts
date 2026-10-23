@@ -1,4 +1,7 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
+import { serve } from "./mcp.ts";
+import { serveHttp } from "./http.ts";
+import { createToolDeps } from "./tools.ts";
 import { createAuth, logout } from "./core/auth.ts";
 import {
   assertClientId,
@@ -33,6 +36,12 @@ export type CliDeps = {
   authStatus?: () => Promise<AuthStatus>;
 };
 
+function parsePort(value: string): number {
+  if (!/^\d+$/.test(value) || Number(value) > 65535)
+    throw new InvalidArgumentError("port must be an integer from 0 to 65535.");
+  return Number(value);
+}
+
 function parseLimit(value: string, maximum: number) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum)
@@ -53,6 +62,45 @@ export async function main(
     .name("outlook")
     .description("Read Outlook email; with no arguments, serve MCP over stdio");
   const emails = program.command("emails").description("List or search email");
+
+  program
+    .command("serve")
+    .description("Serve MCP over stdio or local Streamable HTTP")
+    .addOption(
+      new Option("--transport <transport>", "MCP transport")
+        .choices(["stdio", "http"])
+        .default("stdio"),
+    )
+    .option(
+      "--port <number>",
+      "HTTP port (default: 3000; 0 chooses a free port)",
+      parsePort,
+    )
+    .action(
+      async ({ transport, port }: { transport: string; port?: number }) => {
+        if (transport === "stdio" && port !== undefined)
+          throw new Error("--port requires --transport http.");
+        const toolDeps = createToolDeps(config);
+        if (transport === "stdio") {
+          await serve(toolDeps);
+          return;
+        }
+        const http = await serveHttp(toolDeps, port);
+        console.error(
+          `Outlook MCP Streamable HTTP listening at ${http.url}${config.readonly ? " (read-only; draft tools disabled)" : ""}`,
+        );
+        const shutdown = () => {
+          process.off("SIGINT", shutdown);
+          process.off("SIGTERM", shutdown);
+          void http.close().catch(() => {
+            console.error("Error: HTTP shutdown failed.");
+            process.exitCode = 1;
+          });
+        };
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
+      },
+    );
 
   program
     .command("login")

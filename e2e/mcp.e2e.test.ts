@@ -28,8 +28,12 @@ type Frame = {
  * Serves the entry module over real stdio pipes and records every raw byte it
  * writes, because a single stray byte on stdout corrupts JSON-RPC.
  */
-function startServer(home: string, env: Record<string, string> = {}) {
-  const child = spawn(process.execPath, binArgs, {
+function startServer(
+  home: string,
+  env: Record<string, string> = {},
+  args: string[] = [],
+) {
+  const child = spawn(process.execPath, [...binArgs, ...args], {
     cwd: repo,
     env: {
       ...process.env,
@@ -214,4 +218,24 @@ test("read-only mode serves only the read tools and says so on stderr", async (t
   // The line went to stderr, so stdout is still nothing but frames.
   assert.deepEqual(server.notJson, [], "stdout carries only JSON");
   assert.equal(server.stdoutText().includes("read-only"), false);
+});
+
+test("explicit serve --transport stdio still serves MCP", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-e2e-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const server = startServer(home, {}, ["serve", "--transport", "stdio"]);
+  t.after(() => server.child.kill());
+  const initialized = await server.request(1, "initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "explicit-stdio", version: "0.0.0" },
+  });
+  assert.equal(initialized.result?.serverInfo?.name, "outlook");
+  server.notify("notifications/initialized");
+  const listed = await server.request(2, "tools/list");
+  assert.deepEqual(
+    listed.result?.tools?.map((tool) => tool.name).sort(),
+    [...readToolNames, ...draftToolNames].sort(),
+  );
+  assert.deepEqual(server.notJson, []);
 });

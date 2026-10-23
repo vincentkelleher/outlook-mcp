@@ -23,7 +23,8 @@ refresh, and JSON that is easy for people and agents to use.
   [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so any
   client that can launch a stdio server gets the tools: Claude Code, Claude
   Desktop, Codex, VS Code and Copilot, Cursor, Gemini CLI, OpenCode, Pi, and
-  plain harnesses of your own.
+  plain harnesses of your own. Streamable HTTP is also available explicitly
+  with `serve --transport http`.
 - **A CLI for humans and for clients without MCP.** The same core, driven by
   `node dist/index.js emails list`.
 - **One tool registry, defined once** in `src/tools.ts` and consumed by both
@@ -62,6 +63,25 @@ Clients: `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`,
 `gemini-cli`, `opencode`, `generic`. The per-client matrix, the add commands,
 the timeout units and the honest list of what is unverified live in
 [docs/clients.md](docs/clients.md).
+
+## MCP transports
+
+```bash
+node dist/index.js                               # stdio (default)
+node dist/index.js serve --transport stdio       # explicit stdio
+node dist/index.js serve --transport http --port 3000
+```
+
+HTTP exposes **`http://127.0.0.1:3000/mcp`** using the SDK's Streamable HTTP
+handler, with SSE responses and a fresh server instance per request. Point an
+HTTP-capable MCP client at that URL; generated `config` snippets still use stdio.
+Both transports expose the same tools and resources and honor `OUTLOOK_MCP_READONLY`.
+Use `serve --help` for options; port `0` selects an available port, printed on stderr.
+Stop HTTP with Ctrl+C or SIGTERM.
+
+HTTP binds only to `127.0.0.1`, validates Host and Origin headers, and has **no
+client authentication**: local clients share your cached Outlook account. Do not
+expose it through a public proxy, tunnel or port forward. See [SECURITY.md](SECURITY.md).
 
 ## Sign in
 
@@ -199,13 +219,20 @@ npm run format        # prettier
 npm run format:check
 npm run typecheck     # tsc, noEmit, strict, erasableSyntaxOnly
 npm test              # node --test on the sources
-npm run test:e2e      # spawns the entry over real stdio
+npm run test:e2e      # spawns the entry over real stdio and HTTP
 npm run build         # dist/, which is what clients launch
 ```
 
+The MCP server uses the [TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server.html)
+(`@modelcontextprotocol/server`), with a `createServer` factory served by
+`serveStdio` or `createMcpHandler` plus `@modelcontextprotocol/node`'s
+`toNodeHandler`, following the [HTTP serving guide](https://ts.sdk.modelcontextprotocol.io/v2/serving/http.html).
+The matching `@modelcontextprotocol/client` is a test-only dependency.
+
 Unit tests never reach Microsoft: `createAuth({ msal })` and
 `createGraph({ token, client })` take fakes. The e2e suite spawns the real entry
-and asserts the MCP handshake and that nothing but JSON-RPC reaches stdout. CI
+and checks both transports, HTTP header guards and shutdown, and that nothing
+but JSON-RPC reaches stdio stdout. CI
 runs Node 22 and 24 through the whole list, Node 20 against the built entry only,
 and fails if a `Bun.` identifier appears anywhere in `src`, `test`, `e2e` or
 `skills`.

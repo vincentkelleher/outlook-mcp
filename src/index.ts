@@ -20,10 +20,10 @@ function isMainModule() {
   }
 }
 
-// No arguments, or `serve`, is the MCP server: stdio is then JSON-RPC and must
-// stay clean. Anything else is the human-facing CLI.
+// No arguments preserves the stdio default for existing client configs.
+// Explicit `serve` goes through the CLI to validate transport options.
 function servesMcp(argv: string[]) {
-  return argv.length === 0 || argv[0] === "serve";
+  return argv.length === 0;
 }
 
 if (isMainModule()) {
