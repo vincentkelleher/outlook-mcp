@@ -9,13 +9,19 @@ name: Release
 # What this workflow does not do is publish to npm: the package stays private,
 # and the image on ghcr.io is the distribution (see `docker.yml`).
 #
-# It runs beside CI rather than after it. A push to main therefore cuts its tag
-# while the checks for that same commit are still running; the image is not
-# published until `docker.yml` has built and run it.
+# It waits for the checks rather than racing them: CI runs on every push to
+# main, and this is the completion of a run that passed. The chain is therefore
+# CI → Release → Docker, two `workflow_run` hops, which is as deep as GitHub lets
+# a chain of workflows go.
 
 on:
-  push:
+  # Not `push`, which is what raced the checks. Matched by the CI workflow's
+  # `name:`, so renaming that workflow stops releases without saying so.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
+  # The override: release main as it stands, checks or no checks.
   workflow_dispatch:
 
 # The tag, the release, and the commit that carries the new version.
@@ -31,6 +37,17 @@ concurrency:
 jobs:
   release:
     name: Tag it and say what changed
+    # Both halves of “the checks passed on what is on main”. A CI run that
+    # failed tested nothing worth a version. And a CI run whose commit is no
+    # longer the head of main means something landed while it ran — that commit
+    # has a CI run of its own, and it releases both, because the commit that
+    # landed is in its history. `github.sha` is the head a checkout of this run
+    # puts in the workspace, so what is compared and what semantic-release reads
+    # are the same commit. A skipped run here says exactly that.
+    if: |
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_sha == github.sha)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

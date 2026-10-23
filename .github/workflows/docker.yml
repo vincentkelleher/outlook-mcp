@@ -7,7 +7,8 @@ name: Docker
 # A release arrives here as the completion of `release.yml`, not as a tag push:
 # semantic-release pushes `v0.2.0` with `GITHUB_TOKEN`, and a ref pushed with that
 # token starts no workflow run at all. So `gate` asks the Release run which
-# version it cut, and the image is named from the answer.
+# version it cut, and the image is named from the answer. That release is itself
+# the completion of CI, so the chain reads CI → Release → Docker.
 
 on:
   push:
@@ -43,22 +44,47 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       publish: ${{ steps.decide.outputs.publish }}
     steps:
-      - name: The version the Release run cut
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+      - name: What this run should publish
+        id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          # One listing, captured, then grepped. `gh api | grep -qx` would let
-          # grep close the pipe on the first match, gh would die on the broken
-          # pipe, and pipefail would report that instead of the check.
+
+          # A pull request has no reason to write to the registry, and no right to.
+          if [ "$EVENT" = pull_request ]; then exit 0; fi
+
+          # A push to main, a tag, a manual run: publish the ref it pushed, and let
+          # `docker/metadata-action` name it from that ref.
+          if [ "$EVENT" != workflow_run ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A Release run that was skipped — CI red, or main overtaken — cut no
+          # version, and one that cut no version leaves no artefact. Either way
+          # there is nothing new here, and `publish` stays unset.
+          if [ "$CONCLUSION" != success ]; then
+            echo "The Release run ended '${CONCLUSION:-nothing}', so there is nothing to publish."
+            exit 0
+          fi
+
+          # One listing, captured, then grepped. `gh api | grep -qx` would let grep
+          # close the pipe on the first match, gh would die on the broken pipe, and
+          # pipefail would report that instead of the check.
           names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
             --jq '.artifacts[].name')
           if ! grep -qx released-version <<<"$names"; then
             echo "The Release run cut no version, so there is nothing new to publish."
             exit 0
           fi
+
+          # The tag is invisible to this trigger — semantic-release pushed it with
+          # the workflow token — so the version comes from the Release run's
+          # artefact, and the ref is spelled back out of it.
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name released-version --dir released
           version=$(tr -d '[:space:]' < released/released-version)
@@ -66,13 +92,12 @@ jobs:
             echo "Refusing to publish a version that is not vX.Y.Z: '$version'" >&2
             exit 1
           fi
-          echo "ref=$version" >> "$GITHUB_OUTPUT"
-          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "ref=$version"
+            echo "version=${version#v}"
+            echo "publish=true"
+          } >> "$GITHUB_OUTPUT"
           echo "Released $version: its image goes next."
-      - name: Every other event publishes the ref it pushed
-        if: github.event_name != 'workflow_run' && github.event_name != 'pull_request'
-        run: echo "publish=true" >> "$GITHUB_OUTPUT"
 
   smoke:
     name: Build and run it

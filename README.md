@@ -362,15 +362,21 @@ nothing, so a branch that only tidies up asks for no ceremony. A merge commit
 carries no release of its own — what is read is the commits it brings in, so the
 `feat:` belongs on the commit and not in the merge message.
 
-`.github/workflows/release.yml` runs on every push to `main`. When a commit
-qualified it pushes the tag, writes the new version into `package.json` — the
-file `/health` and the MCP `initialize` reply both read — and opens the GitHub
-Release that is
-this project's changelog. There is no `CHANGELOG.md` to keep in step by hand, and
-no npm publish: the image on `ghcr.io/vincentkelleher/outlook-mcp` is the
-distribution, and `docker.yml` publishes `X.Y.Z`, `X.Y` and `latest` for it, so
+`.github/workflows/release.yml` runs once the checks on `main` have passed, and
+when a commit qualified it pushes the tag, writes the new version into
+`package.json` — the file `/health` and the MCP `initialize` reply both read —
+and opens the GitHub Release that is this project's changelog. There is no
+`CHANGELOG.md` to keep in step by hand, and no npm publish: the image on
+`ghcr.io/vincentkelleher/outlook-mcp` is the distribution, and `docker.yml`
+publishes `X.Y.Z`, `X.Y` and `latest` for it, so
 `docker pull ghcr.io/vincentkelleher/outlook-mcp:0.2` means the release, not the
 build that happens to share a number.
+
+So no version is cut for code the checks rejected, and none for a commit that
+was overtaken: when main moves while CI is running, the release waits for that
+commit's own checks, and one release covers both. The chain is
+CI → Release → Docker, and a Release run that was skipped says one of those two
+things happened.
 
 A tag pushed with the workflow token starts no run of its own, which is the only
 reason those two workflows speak at all: the version travels from the Release run
