@@ -44,13 +44,25 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       publish: ${{ steps.decide.outputs.publish }}
     steps:
+      # The documented way to read another run's artefact: the run id out of the
+      # event, and a token to ask with. Only a run that passed can have answered —
+      # a skipped one never reached the step that writes the answer, and
+      # `download-artifact` fails on a named artefact that is not there instead of
+      # quietly reporting nothing.
+      - name: What the Release run decided
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: released-version
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: released
+
       - name: What this run should publish
         id: decide
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
 
@@ -64,30 +76,24 @@ jobs:
             exit 0
           fi
 
-          # A Release run that was skipped — CI red, or main overtaken — cut no
-          # version, and one that cut no version leaves no artefact. Either way
-          # there is nothing new here, and `publish` stays unset.
+          # A Release run that was skipped — CI red, or main overtaken — never got
+          # to answer, and one that cut no version answers `none`. Either way there
+          # is nothing new here, and `publish` stays unset.
           if [ "$CONCLUSION" != success ]; then
             echo "The Release run ended '${CONCLUSION:-nothing}', so there is nothing to publish."
             exit 0
           fi
 
-          # One listing, captured, then grepped. `gh api | grep -qx` would let grep
-          # close the pipe on the first match, gh would die on the broken pipe, and
-          # pipefail would report that instead of the check.
-          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
-            --jq '.artifacts[].name')
-          if ! grep -qx released-version <<<"$names"; then
+          # The tag is invisible to this trigger — semantic-release pushed it with
+          # the workflow token — so the version comes from the answer the Release run
+          # left behind, and the ref is spelled back out of it. An answer that is
+          # not here at all fails this step, which is where it belongs: the version
+          # is unknown, not merely absent.
+          version=$(tr -d '[:space:]' < released/released-version)
+          if [ "$version" = none ]; then
             echo "The Release run cut no version, so there is nothing new to publish."
             exit 0
           fi
-
-          # The tag is invisible to this trigger — semantic-release pushed it with
-          # the workflow token — so the version comes from the Release run's
-          # artefact, and the ref is spelled back out of it.
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name released-version --dir released
-          version=$(tr -d '[:space:]' < released/released-version)
           if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Refusing to publish a version that is not vX.Y.Z: '$version'" >&2
             exit 1
