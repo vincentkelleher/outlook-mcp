@@ -1,0 +1,44 @@
+# Versioning lives here, and in the commit messages on `main`: `fix:` is a
+# patch, `feat:` a minor, `BREAKING CHANGE:` in the body (or `!` after the type)
+# a major. Everything else — `chore:`, `docs:`, `test:`, `ci:` — cuts no
+# release. GitHub Actions runs it; see `.github/workflows/release.yml`.
+#
+# A release is a tag, a GitHub Release carrying the notes, and (through the
+# `workflow_run` trigger in `docker.yml`) the versioned image on ghcr.io. There
+# is no npm publish, so `private: true` stays.
+
+# Only `main` releases. A merge of a feature branch releases with the commits it
+# carried, which is what `fix:` and `feat:` on a branch mean here.
+branches:
+  - main
+
+# `v0.1.0`, the shape `docker.yml` matches with `tags: ["v*"]` and that
+# `docker/metadata-action` reads as a semver.
+tagFormat: "v${version}"
+
+plugins:
+  - "@semantic-release/commit-analyzer"
+  - "@semantic-release/release-notes-generator"
+
+  # `npmPublish: false` is the whole point of keeping this plugin: it writes the
+  # new version into `package.json` — which the image reads at runtime, and
+  # `/health` reports — without the package going anywhere. `NPM_TOKEN` is not
+  # read, and the registry is not contacted.
+  - - "@semantic-release/npm"
+    - npmPublish: false
+
+  # The version reaches the repository only through this plugin: the npm plugin
+  # edits `package.json` in the workspace and leaves the commit to someone else.
+  # `package-lock.json` follows it, so the lockfile of a tagged build is the
+  # lockfile of that version.
+  - - "@semantic-release/git"
+    - assets:
+        - package.json
+        - package-lock.json
+      # `[skip ci]`: the release commit changes no behaviour, and CI has already
+      # run on the commit the tag points back to.
+      message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+
+  # The GitHub Release is the changelog: generated notes, one section per
+  # release, at https://github.com/vincentkelleher/outlook-mcp/releases.
+  - "@semantic-release/github"

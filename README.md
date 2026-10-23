@@ -353,6 +353,30 @@ and asserts the MCP handshake and that nothing but JSON-RPC reaches stdout. CI
 runs Node 22 and 24 through the whole list, and packs and inspects the release
 tarball.
 
+## Releases
+
+The version follows the commit messages on `main`, and `.releaserc.yaml` holds
+the rules: `fix:` is a patch, `feat:` a minor, and a `!` after the type or a
+`BREAKING CHANGE:` footer a major. `chore:`, `docs:`, `test:` and `ci:` cut
+nothing, so a branch that only tidies up asks for no ceremony. A merge commit
+carries no release of its own — what is read is the commits it brings in, so the
+`feat:` belongs on the commit and not in the merge message.
+
+`.github/workflows/release.yml` runs on every push to `main`. When a commit
+qualified it pushes the tag, writes the new version into `package.json` — the
+file `/health` and the MCP `initialize` reply both read — and opens the GitHub
+Release that is
+this project's changelog. There is no `CHANGELOG.md` to keep in step by hand, and
+no npm publish: the image on `ghcr.io/vincentkelleher/outlook-mcp` is the
+distribution, and `docker.yml` publishes `X.Y.Z`, `X.Y` and `latest` for it, so
+`docker pull ghcr.io/vincentkelleher/outlook-mcp:0.2` means the release, not the
+build that happens to share a number.
+
+A tag pushed with the workflow token starts no run of its own, which is the only
+reason those two workflows speak at all: the version travels from the Release run
+to `docker.yml` as an artefact. `v0.1.0` is the baseline — everything before it
+was versioned by hand, and the analysis counts from that tag forward.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

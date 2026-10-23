@@ -253,7 +253,6 @@ test("the migration plan is history: not shipped, and cited by nothing", () => {
     "docs/clients.md",
     "README.md",
     "SECURITY.md",
-    "CHANGELOG.md",
     "LICENSE",
   ]);
 
@@ -266,7 +265,6 @@ test("the migration plan is history: not shipped, and cited by nothing", () => {
     ...textFiles(join(repo, "skills")),
     join(repo, "README.md"),
     join(repo, "SECURITY.md"),
-    join(repo, "CHANGELOG.md"),
   ];
   assert.equal(readable.length >= 15, true, "the shipped surface is read");
   assert.deepEqual(

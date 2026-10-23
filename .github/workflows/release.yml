@@ -1,0 +1,80 @@
+name: Release
+
+# The version comes from the commit messages on main: `fix:` is a patch, `feat:`
+# a minor, `BREAKING CHANGE:` a major; `chore:`, `docs:` and `ci:` are nothing.
+# semantic-release turns the newest of them into a tag, a GitHub Release holding
+# the notes, and the version written into `package.json` — which is what the
+# image reports at `/health`. `.releaserc.yaml` owns the rules.
+#
+# What this workflow does not do is publish to npm: the package stays private,
+# and the image on ghcr.io is the distribution (see `docker.yml`).
+#
+# It runs beside CI rather than after it. A push to main therefore cuts its tag
+# while the checks for that same commit are still running; the image is not
+# published until `docker.yml` has built and run it.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The tag, the release, and the commit that carries the new version.
+permissions:
+  contents: write
+
+# Two releases racing over the same tag is how a version gets published twice,
+# or not at all: one at a time, and let the queue run in order.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag it and say what changed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, tags included: the last tag is where the next
+          # version is counted from, and a shallow clone cannot see it.
+          fetch-depth: 0
+          # semantic-release pushes the tag and the version commit with the
+          # credentials this checkout left behind.
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          # semantic-release 25 and @semantic-release/git both ask for more than
+          # `engines.node` does; this is what they run on.
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: The version before
+        run: node -p "require('./package.json').version" | tr -d "\n" > version-before
+      - name: semantic-release
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: The version it cut, if it cut one
+        # No qualifying commit means no release, and no release means
+        # `package.json` still says what it said before: the two lines agree
+        # exactly when there is nothing new to build an image from.
+        run: |
+          set -euo pipefail
+          before=$(cat version-before)
+          after=$(node -p "require('./package.json').version")
+          if [ "$before" = "$after" ]; then
+            echo "No commit since $before asked for a release, so there is no image to publish."
+          else
+            printf "v%s\n" "$after" > released-version
+            echo "Released v$after"
+          fi
+      - name: Hand the version to docker.yml
+        # A tag pushed with the workflow token starts no run of its own, so the
+        # version has to travel to `docker.yml` by way of this artefact: it is
+        # the only thing that says which tag this run created.
+        if: hashFiles('released-version') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: released-version
+          path: released-version
+          if-no-files-found: error

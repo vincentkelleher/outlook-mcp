@@ -3,6 +3,11 @@ name: Docker
 # The image is published from tags, built on every push to the default branch,
 # and built and smoke-tested on every pull request, so a pull request that breaks
 # the container is found there and not in a release.
+#
+# A release arrives here as the completion of `release.yml`, not as a tag push:
+# semantic-release pushes `v0.2.0` with `GITHUB_TOKEN`, and a ref pushed with that
+# token starts no workflow run at all. So `gate` asks the Release run which
+# version it cut, and the image is named from the answer.
 
 on:
   push:
@@ -10,10 +15,16 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
   packages: write
+  # `gate` lists and downloads the artefact of the run that triggered this one.
+  actions: read
 
 env:
   # Lower case, as GHCR requires: `github.repository` already is for this repo,
@@ -21,11 +32,58 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  gate:
+    name: What to publish
+    runs-on: ubuntu-latest
+    outputs:
+      # The ref to build: empty for every event but a release, where it is the
+      # tag `release.yml` created and no trigger of ours can see.
+      ref: ${{ steps.decide.outputs.ref }}
+      # The same version without the `v`, which is the shape an image tag wants.
+      version: ${{ steps.decide.outputs.version }}
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - name: The version the Release run cut
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          # One listing, captured, then grepped. `gh api | grep -qx` would let
+          # grep close the pipe on the first match, gh would die on the broken
+          # pipe, and pipefail would report that instead of the check.
+          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[].name')
+          if ! grep -qx released-version <<<"$names"; then
+            echo "The Release run cut no version, so there is nothing new to publish."
+            exit 0
+          fi
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name released-version --dir released
+          version=$(tr -d '[:space:]' < released/released-version)
+          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing to publish a version that is not vX.Y.Z: '$version'" >&2
+            exit 1
+          fi
+          echo "ref=$version" >> "$GITHUB_OUTPUT"
+          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "Released $version: its image goes next."
+      - name: Every other event publishes the ref it pushed
+        if: github.event_name != 'workflow_run' && github.event_name != 'pull_request'
+        run: echo "publish=true" >> "$GITHUB_OUTPUT"
+
   smoke:
     name: Build and run it
+    needs: gate
     runs-on: ubuntu-latest
     steps:
+      # The same source the image is published from: a release tests the tag, not
+      # whatever the default branch happens to be by the time this runs.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
       - uses: docker/setup-buildx-action@v3
 
       # One architecture, loaded into the runner's Docker, because the steps
@@ -100,12 +158,15 @@ jobs:
 
   image:
     name: Publish
-    needs: smoke
-    # A pull request has no reason to write to the registry, and no right to.
-    if: github.event_name != 'pull_request'
+    needs: [gate, smoke]
+    # A pull request has no reason to write to the registry and no right to it,
+    # and a Release run that cut no version has nothing new to put there.
+    if: needs.smoke.result == 'success' && needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -119,10 +180,19 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=sha,format=short,prefix=sha-
+            type=sha,format=short,prefix=sha-,enable=${{ needs.gate.outputs.version == '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
+            # A release is the completion of another workflow, so the event is
+            # neither a tag push nor a push to the default branch: `type=semver`
+            # has no tag of its own to read and `{{is_default_branch}}` is false.
+            # Name the tags from the version the Release run reported, so that
+            # `latest` follows a release rather than the commit main was at
+            # before the version commit landed on it.
+            type=semver,pattern={{version}},value=v${{ needs.gate.outputs.version }},enable=${{ needs.gate.outputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.gate.outputs.version }},enable=${{ needs.gate.outputs.version != '' }}
+            type=raw,value=latest,enable=${{ needs.gate.outputs.version != '' }}
 
       - name: Build and push both architectures
         uses: docker/build-push-action@v6
