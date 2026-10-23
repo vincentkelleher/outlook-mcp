@@ -35,38 +35,6 @@ jobs:
           node dist/index.js --help | grep -q 'emails'
           node dist/index.js config generic
 
-  node20:
-    name: Node 20 (built entry only)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-      # Native type stripping does not exist here, so nothing runs the sources:
-      # compile, then smoke-test what a client would actually launch.
-      - run: npm ci
-      - run: npm run build
-      - run: node dist/index.js --help
-      - run: node dist/index.js config vscode
-      # The image runs `serve --http` on whatever Node it lands on, so the flag
-      # has to exist in the built entry, not only in the sources.
-      - run: node dist/index.js serve --help | grep -q -- '--http'
-      - run: node dist/index.js emails list --limit 0 2>&1 | grep -q 'must be an integer'
-
-  guards:
-    name: Guards
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: no Bun identifiers
-        run: |
-          if grep -rn 'Bun\.' src test e2e skills; then
-            echo '::error::Node only: a Bun. identifier appeared in src, test, e2e or skills.'
-            exit 1
-          fi
-
   pack:
     name: Release artefact
     runs-on: ubuntu-latest

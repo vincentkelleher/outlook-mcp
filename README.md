@@ -350,9 +350,8 @@ npm run build         # dist/, which is what clients launch
 Unit tests never reach Microsoft: `createAuth({ msal })` and
 `createGraph({ token, client })` take fakes. The e2e suite spawns the real entry
 and asserts the MCP handshake and that nothing but JSON-RPC reaches stdout. CI
-runs Node 22 and 24 through the whole list, Node 20 against the built entry only,
-and fails if a `Bun.` identifier appears anywhere in `src`, `test`, `e2e` or
-`skills`.
+runs Node 22 and 24 through the whole list, and packs and inspects the release
+tarball.
 
 ## License
 
