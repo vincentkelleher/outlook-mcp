@@ -339,7 +339,7 @@ export function resolveEntry(root = packageRoot): {
   if (existsSync(built)) return { path: built };
   return {
     path: join(root, "src", "index.ts"),
-    warning: `${built} does not exist, so the configuration points at the TypeScript sources, which need Node 22.18 or newer. Run npm run build for a path that works on Node 20.`,
+    warning: `${built} does not exist, so the configuration points at the TypeScript sources, which need Node 22.18 or newer. Run npm run build for a path that works on Node 22 too.`,
   };
 }
 

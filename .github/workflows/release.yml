@@ -60,8 +60,8 @@ jobs:
           persist-credentials: true
       - uses: actions/setup-node@v4
         with:
-          # semantic-release 25 and @semantic-release/git both ask for more than
-          # `engines.node` does; this is what they run on.
+          # semantic-release 25 wants 22.14+ or 24.10+, and @semantic-release/git
+          # wants more again; this is the line they both clear.
           node-version: "24"
           cache: npm
       - run: npm ci

@@ -1,7 +1,7 @@
 ---
 name: outlook-mcp
 description: Read, search, and draft Outlook email through Microsoft Graph, with device-code sign-in cached on disk. Use when the user asks to find, inspect, summarise, or search messages in their Outlook mailbox, or to write a draft, reply draft, or forward draft. Cannot send mail: a person sends.
-compatibility: Node 22.18 or newer to run the sources, or Node 20 with a built dist. Needs OUTLOOK_OAUTH_CLIENT_ID.
+compatibility: Node 22 or newer; 22.18+ to run the TypeScript sources without building dist first. Needs OUTLOOK_OAUTH_CLIENT_ID.
 ---
 
 # Outlook

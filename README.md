@@ -333,10 +333,11 @@ Drafts and sends.
 
 ## Development
 
-Node only. There is no Bun, no npm publish, and no build step while iterating:
+Node only, and `engines.node` says 22 — the two versions CI and the image are
+built on. There is no Bun, no npm publish, and no build step while iterating:
 `node` runs the TypeScript sources directly through native type stripping
-(Node 22.18+ or 23.6+), and `npm run build` compiles `dist/` for people who stay
-on Node 20.
+(Node 22.18+ or 23.6+), and `npm run build` compiles `dist/` — what ships, what
+clients launch, and what a Node below 22.18 runs instead.
 
 ```bash
 npm run format        # prettier
