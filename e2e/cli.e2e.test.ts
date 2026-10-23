@@ -51,12 +51,35 @@ test("CLI exposes every documented command", (t) => {
   assert.match(emails.stdout, /attachments <message-id>/);
   assert.match(emails.stdout, /search \[options\] <query>/);
   assert.match(root.stdout, /config \[options\] <client>/);
+  assert.match(root.stdout, /serve \[options\]/);
   // Drafts are MCP-only on purpose: a human writes them in Outlook, not here.
   assert.equal(
     `${root.stdout}${emails.stdout}`.toLowerCase().includes("draft"),
     false,
     "the CLI offers no draft command",
   );
+});
+
+test("serve help documents the transports and rejects invalid options", (t) => {
+  const home = testHome(t);
+  const help = outlook(home, "serve", "--help");
+  assert.equal(help.exitCode, 0);
+  assert.match(help.stdout, /--http/);
+  assert.match(help.stdout, /stdio/);
+  assert.match(help.stdout, /--host/);
+  assert.match(help.stdout, /--port/);
+  for (const args of [
+    ["--http", "--port", "-1"],
+    ["--http", "--port", "65536"],
+    ["--http", "--port", "1.5"],
+    ["--http", "--port", "abc"],
+    ["--unknown"],
+  ]) {
+    const result = outlook(home, "serve", ...args);
+    assert.notEqual(result.exitCode, 0, args.join(" "));
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /error/i);
+  }
 });
 
 test("config prints the shape a client actually reads", (t) => {
@@ -74,9 +97,10 @@ test("config prints the shape a client actually reads", (t) => {
     "${OUTLOOK_OAUTH_CLIENT_ID}",
   );
   // An absolute path into this checkout, built or not, never a relative guess.
-  assert.match(
-    server.args[0],
-    /outlook-skill\/(dist\/index\.js|src\/index\.ts)$/,
+  assert.ok(
+    [join(repo, "dist/index.js"), join(repo, "src/index.ts")].includes(
+      server.args[0],
+    ),
     server.args[0],
   );
 

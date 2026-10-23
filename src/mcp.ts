@@ -6,11 +6,12 @@ import { format } from "node:util";
 import {
   McpServer,
   ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+  ProtocolError,
+  ProtocolErrorCode,
+} from "@modelcontextprotocol/server";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { packageVersion, scopesFor } from "./core/config.ts";
 import {
   admitRequest,
@@ -144,11 +145,11 @@ async function guard<T>(
       },
     );
     if (error instanceof AuthRequiredError)
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         signInRequired(reasonOf(error)),
       );
-    throw new McpError(ErrorCode.InternalError, reasonOf(error));
+    throw new ProtocolError(ProtocolErrorCode.InternalError, reasonOf(error));
   }
 }
 
@@ -159,8 +160,8 @@ function inboxPage(uri: URL) {
   if (limit !== null) {
     const parsed = Number(limit);
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxPageSize)
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         `limit must be an integer from 1 to ${maxPageSize}.`,
       );
     top = parsed;
@@ -171,8 +172,8 @@ function inboxPage(uri: URL) {
 function messageIdOf(uri: URL): string {
   const id = decodeURIComponent(uri.pathname.replace(/^\/+/, ""));
   if (!id)
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidParams,
       `Resource ${uri.toString()} names no message.`,
     );
   return id;
@@ -336,8 +337,9 @@ export async function serve(deps: ToolDeps): Promise<void> {
     tools: toolsFor(deps.config).length,
     logLevel: deps.config.logLevel,
   });
-  const server = createServer(deps);
-  await server.connect(new StdioServerTransport());
+  // The handle keeps the process alive while the client holds stdin, and the
+  // transport closes itself at EOF, as the stdio binding asks.
+  serveStdio(() => createServer(deps));
 }
 
 /**
@@ -351,7 +353,7 @@ export async function serve(deps: ToolDeps): Promise<void> {
  */
 type Session = {
   server: McpServer;
-  transport: StreamableHTTPServerTransport;
+  transport: NodeStreamableHTTPServerTransport;
   /**
    * Requests being served right now. A held-open SSE stream counts, so a client
    * that is connected and idle is never mistaken for a client that is gone.
@@ -580,7 +582,7 @@ export async function startHttp(
       // the calls.
       const sessionLog = scopedLogger("http", bound);
       const server = createServer(deps, scopedLogger("mcp", bound));
-      const transport = new StreamableHTTPServerTransport({
+      const transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
           identified.id = id;

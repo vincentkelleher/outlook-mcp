@@ -9,6 +9,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The conversion from a Bun command-line script into a Node MCP server that an
 agent can drive. Everything published before this was the Bun CLI.
 
+### Changed
+
+- Migrated from `@modelcontextprotocol/sdk` v1 to the split TypeScript SDK v2
+  packages, pinned to 2.3.1. Stdio now uses `serveStdio(createServer)` with
+  injected dependencies; the client package is needed only for tests.
+
 ### Added
 
 - **MCP server.** Launch with no arguments (or `serve`) and it speaks Model

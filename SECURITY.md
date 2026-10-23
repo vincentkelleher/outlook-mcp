@@ -12,9 +12,29 @@ leaked from this repository, your shell history, or a config file. The
 registration must have **Allow public client flows** enabled for sign-in to work
 at all.
 
-The only network destinations are the Microsoft identity endpoint and Microsoft
-Graph: this code has no analytics, no update check, and no third-party call.
-Mail content reaches the model you are already talking to and nowhere else.
+The only outbound API destinations are the Microsoft identity endpoint and
+Microsoft Graph: this code has no analytics, no update check, and no third-party
+API call. MCP returns mail content to the connected client.
+
+## Local MCP transports
+
+Stdio is the default and opens no listening socket. `serve --http` explicitly
+enables Streamable HTTP at `http://127.0.0.1:3939/mcp` (`OUTLOOK_MCP_HOST`,
+`OUTLOOK_MCP_PORT`, `--host`, `--port`, with `--port 0` choosing a free port).
+Every request is admitted on its `Host` and `Origin` before anything is read —
+loopback by default, with other names accepted through
+`OUTLOOK_MCP_ALLOWED_HOSTS` — protecting against DNS rebinding and browser
+requests from non-local origins. Unknown paths return 404.
+
+**HTTP clients are not authenticated.** These guards are not authorization:
+local processes and allowed localhost browser origins can use the cached mailbox
+session, including the draft tools unless read-only mode is enabled. Only run it
+on a trusted single-user machine. Do not expose it via proxies, tunnels or port
+forwarding; remote hosting needs verified client authentication and TLS first.
+Each session gets its own MCP server instance — at most 32 open at a time, and
+idle ones are retired after `OUTLOOK_MCP_SESSION_IDLE_MINUTES` — but every
+session shares the configured Outlook account, cache and sign-in state.
+SIGINT/SIGTERM close the sessions and the listener.
 
 ## Scopes, and the one it will never ask for
 

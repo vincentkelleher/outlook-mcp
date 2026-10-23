@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const binArgs = (process.env.OUTLOOK_E2E_BIN ?? "src/index.ts").split(" ");
