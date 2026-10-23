@@ -54,7 +54,11 @@ jobs:
           cat body.json
           grep -q '"status":"ok"' body.json
           grep -q '"readonly":false' body.json
-          docker logs smoke | grep -q 'Outlook MCP serving on http://127.0.0.1:3939/mcp'
+          # The banner is logged on stderr, so the pipe must carry it, and grep
+          # must read to EOF: with `grep -q` the pipe closes on the match, the
+          # docker CLI dies writing the rest, and pipefail reports that instead
+          # of the grep that matched.
+          docker logs smoke 2>&1 | grep 'Outlook MCP serving on http://127.0.0.1:3939/mcp' > /dev/null
 
       - name: A name that is not this machine's is refused
         # The DNS rebinding rule, checked against the real container behind a
@@ -74,16 +78,19 @@ jobs:
       - name: The CLI in the image is the CLI in the README
         run: |
           set -euo pipefail
-          docker run --rm outlook-mcp:smoke --help | grep -q 'serve \[options\]'
+          docker run --rm outlook-mcp:smoke --help 2>&1 | grep 'serve \[options\]' > /dev/null
           # `docker exec` starts a program, not the entrypoint, so this is the
-          # form the README gives.
-          docker exec smoke outlook config docker | grep -q '127.0.0.1:3939/mcp'
+          # form the README gives. As above: read the pipe to EOF, do not let
+          # `grep -q` close it under the writer.
+          docker exec smoke outlook config docker 2>&1 | grep '127.0.0.1:3939/mcp' > /dev/null
           # A `.env` in the layer would configure every container built from it,
           # because the entry reads one from its working directory.
           docker run --rm --entrypoint sh outlook-mcp:smoke -c 'test ! -e /app/.env'
-          # And it ships no session: /data is empty until somebody signs in, and
-          # nothing is built into that volume.
-          test -z "$(docker run --rm --entrypoint sh outlook-mcp:smoke -c 'ls -A /data')"
+          # And it ships no session: /data holds nothing but the attachments
+          # directory the image creates, so anything else — a token, a config —
+          # would be built into the volume. `ls -A /data` alone would always
+          # report the attachments directory itself.
+          test -z "$(docker run --rm --entrypoint sh outlook-mcp:smoke -c 'find /data -mindepth 1 ! -path /data/attachments ! -path "/data/attachments/*"')"
 
       - name: Why it died
         if: failure()
