@@ -47,8 +47,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       # GitHub's auto-generated source archives contain no build output and
-      # `prepare` does not run for a tarball install, so the artefact attached to
-      # a release must be `npm pack` output. Assert that it is.
+      # `prepare` does not run for a tarball install, so what a person installs is
+      # `npm pack` output and nothing else. Assert that it is; the release itself
+      # carries no archive (the image is the distribution), so the tarball is kept
+      # only to be looked at.
       - name: pack and inspect the tarball
         run: |
           set -euo pipefail
@@ -64,21 +66,32 @@ jobs:
           # promise it cannot keep; the plan is a historical record and stays out.
           grep -q '^package/skills/outlook-mcp/SKILL\.md$' <<<"$listing"
           grep -q '^package/docs/clients\.md$' <<<"$listing"
-          ! grep -q 'plan-mcp-skill' <<<"$listing"
-          tar -xzf "$tarball" -O package/package.json | node -e '
-            let text = "";
-            process.stdin.on("data", (chunk) => (text += chunk));
-            process.stdin.on("end", () => {
-              const manifest = JSON.parse(text);
-              if (!manifest.name || !manifest.version)
-                throw new Error("the packed package.json needs name and version");
-              if (manifest.bin && !manifest.bin["outlook-mcp"])
-                throw new Error("the packed bin does not point at dist/index.js");
-              console.log(manifest.name, manifest.version, manifest.bin["outlook-mcp"]);
-            });
+          # A negated command is the one thing `set -e` is documented to ignore:
+          # bash skips errexit for any command whose status it inverts with `!`. So
+          # the check has to say what it found and leave — as it stood, the plan
+          # could be in the tarball and the job would still be green, on every
+          # shell from 5.1 up.
+          if grep -q 'plan-mcp-skill' <<<"$listing"; then
+            echo "the migration plan is in the tarball" >&2
+            exit 1
+          fi
+          # fd 0 is the pipe, so there is nothing to plumb: no buffer, no event
+          # handlers, and no `require` in a repository whose package.json is a
+          # module. Checked on the Node this job runs and the one before it.
+          tar -xzf "$tarball" -O package/package.json | node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const manifest = JSON.parse(readFileSync(0, "utf8"));
+            if (!manifest.name || !manifest.version)
+              throw new Error("the packed package.json needs name and version");
+            if (manifest.bin && !manifest.bin["outlook-mcp"])
+              throw new Error("the packed bin does not point at dist/index.js");
+            console.log(manifest.name, manifest.version, manifest.bin["outlook-mcp"]);
           '
       - uses: actions/upload-artifact@v4
         with:
           name: outlook-mcp-tarball
           path: outlook-mcp-*.tgz
           if-no-files-found: error
+          # Nothing downstream reads it; a week is long enough to notice a bad
+          # release and answer the question of what was actually in it.
+          retention-days: 7
