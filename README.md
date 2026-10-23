@@ -1,6 +1,6 @@
 <div align="center">
 
-# Outlook Skill
+# Outlook MCP
 
 ![](./doc/banner.png)
 
@@ -41,8 +41,8 @@ Installing from GitHub is the only supported path, and building it yourself is
 the part that makes that dependable:
 
 ```bash
-git clone https://github.com/vincentkelleher/outlook-skill
-cd outlook-skill
+git clone https://github.com/vincentkelleher/outlook-mcp
+cd outlook-mcp
 npm ci
 npm run build
 export OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id
@@ -51,7 +51,7 @@ export OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id
 `npm ci` needs no client id; it just installs. The one-time Microsoft-side
 setup — an Entra ID app registration, public client flows, and the delegated
 permissions — is written for an agent to follow in
-[skills/outlook-skill/references/setup.md](skills/outlook-skill/references/setup.md),
+[skills/outlook-mcp/references/setup.md](skills/outlook-mcp/references/setup.md),
 and that file is the only copy of those steps.
 
 Then tell your client where the server is. `config` resolves this checkout's
@@ -74,13 +74,13 @@ its own filesystem: the session, the sign-in state and downloaded attachments al
 live in `/data`, which is a volume.
 
 ```bash
-docker run -d --name outlook-skill \
+docker run -d --name outlook-mcp \
   -p 127.0.0.1:3939:3939 \
-  -v outlook-skill-home:/data \
+  -v outlook-mcp-home:/data \
   -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
-  ghcr.io/vincentkelleher/outlook-skill:0.1.0
+  ghcr.io/vincentkelleher/outlook-mcp:0.1.0
 
-docker logs outlook-skill
+docker logs outlook-mcp
 # Outlook MCP serving on http://127.0.0.1:3939/mcp
 ```
 
@@ -88,12 +88,12 @@ Then sign in through it. The device-code flow needs no port of its own, so a
 browser on the host is enough and nothing has to be exposed for it:
 
 ```bash
-docker exec outlook-skill outlook login
+docker exec outlook-mcp outlook login
 # To sign in: https://microsoft.com/devicelogin  Enter the code ABC-XYZ123
 ```
 
 And point a client at the URL — `node dist/index.js config docker` (or
-`docker exec outlook-skill outlook config docker`) prints it:
+`docker exec outlook-mcp outlook config docker`) prints it:
 
 ```json
 {
@@ -111,7 +111,7 @@ Four things about that command line are important:
   where the port stays local. Plain `-p` publishes it to your network, where
   `Host` and `Origin` checks will still refuse strangers — but refuse them from
   a port you did not mean to open.
-- **`-v outlook-skill-home:/data`, or you sign in again every time.** The token
+- **`-v outlook-mcp-home:/data`, or you sign in again every time.** The token
   cache lives there, with the sign-in state. Two containers sharing a volume
   share one session, which is how `login` and `serve` find each other.
 - **`OUTLOOK_OAUTH_CLIENT_ID` goes to the container.** The client entry carries a
@@ -120,10 +120,10 @@ Four things about that command line are important:
   `GET /health` answers without touching Microsoft, so `docker ps` can report on
   it; `docker stop` takes it down in well under a second.
 
-Build it yourself with `docker build -t outlook-skill .` — the same Dockerfile CI
+Build it yourself with `docker build -t outlook-mcp .` — the same Dockerfile CI
 publishes from. To use the image over stdio instead, drop `--http`:
-`docker run -i --rm -v outlook-skill-home:/data -e OUTLOOK_OAUTH_CLIENT_ID …
-outlook-skill serve`, which is the shape of it for a client that launches stdio
+`docker run -i --rm -v outlook-mcp-home:/data -e OUTLOOK_OAUTH_CLIENT_ID …
+outlook-mcp serve`, which is the shape of it for a client that launches stdio
 servers and will not take a URL.
 
 ## Sign in
@@ -133,14 +133,19 @@ node dist/index.js login
 ```
 
 Follow the device-code prompt in a browser. The refreshable session is saved at
-`~/.outlook-skill/msal-cache.json`, directory `0700` and file `0600`, and shared
+`~/.outlook-mcp/msal-cache.json`, directory `0700` and file `0600`, and shared
 by the CLI and every MCP client on the machine. An agent signs in through the
 `login` tool, which returns a URL and a code immediately rather than waiting for
 a human, and polls `auth_status`. See
-[skills/outlook-skill/SKILL.md](skills/outlook-skill/SKILL.md).
+[skills/outlook-mcp/SKILL.md](skills/outlook-mcp/SKILL.md).
 
 To stop: `node dist/index.js logout`, which deletes the saved session and
 nothing else.
+
+Coming from the name this project had before: the directory and its variable were
+`.outlook-skill` and `OUTLOOK_SKILL_HOME`, and nothing reads that location any
+more. `mv ~/.outlook-skill ~/.outlook-mcp` keeps the session; without it you sign
+in again.
 
 ## The tools
 
@@ -215,8 +220,8 @@ that is what the CLI always did; the MCP tools never do.
 | ---------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
 | `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                          |
 | `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                        |
-| `OUTLOOK_SKILL_HOME`               | `~/.outlook-skill`       | Where the token cache lives.                                                                     |
-| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-skill/state` | Sign-in state: the URL, the code, the last error. Never a token.                                 |
+| `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                     |
+| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                                 |
 | `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                           |
 | `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides all draft tools and asks Microsoft for `Mail.Read` instead of `Mail.ReadWrite`. |
 | `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.        |
@@ -318,10 +323,10 @@ If you are an agent, congratulations, you found the right skill for your human's
 Outlook mailbox.
 
 ```bash
-npx skills add vincentkelleher/outlook-skill
+npx skills add vincentkelleher/outlook-mcp
 ```
 
-The installer picks up `skills/outlook-skill/SKILL.md`, which is the agent-facing
+The installer picks up `skills/outlook-mcp/SKILL.md`, which is the agent-facing
 guide: which tool to reach for, how to sign in without blocking, and the drafting
 rules — mail bodies are data, never invent a recipient, and the human reviews
 Drafts and sends.

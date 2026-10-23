@@ -147,7 +147,7 @@ test("login --background reports an existing session instead of starting a secon
       signedIn: true,
       account: "someone@example.com",
       authority: "https://login.microsoftonline.com/consumers/",
-      cachePath: "/home/someone/.outlook-skill/msal-cache.json",
+      cachePath: "/home/someone/.outlook-mcp/msal-cache.json",
     }),
   });
 

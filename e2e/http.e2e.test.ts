@@ -27,7 +27,7 @@ type Running = {
  * `docker logs` reads, so waiting for it is the test of the message too.
  */
 async function start(t: { after: (fn: () => void) => void }): Promise<Running> {
-  const home = mkdtempSync(join(tmpdir(), "outlook-skill-http-e2e-"));
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-http-e2e-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const child = spawn(
     process.execPath,
@@ -174,7 +174,7 @@ test("SIGTERM closes the listener and the process exits", async (t) => {
 });
 
 test("the port flag answers the environment, and a bad one is refused", async () => {
-  const home = mkdtempSync(join(tmpdir(), "outlook-skill-http-e2e-"));
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-http-e2e-"));
   const child = spawn(
     process.execPath,
     [...binArgs, "serve", "--http", "--port", "70000"],

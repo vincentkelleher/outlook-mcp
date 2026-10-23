@@ -27,7 +27,7 @@ const envName = "OUTLOOK_OAUTH_CLIENT_ID";
 /** Stands in for a client id the process does not have. Never a secret. */
 const clientIdPlaceholder = "your-application-client-id";
 /** Where the published image lives; `OUTLOOK_MCP_IMAGE` overrides it wholesale. */
-const defaultImage = `ghcr.io/vincentkelleher/outlook-skill:${packageVersion()}`;
+const defaultImage = `ghcr.io/vincentkelleher/outlook-mcp:${packageVersion()}`;
 
 export const clientIds = [
   "pi",
@@ -129,9 +129,9 @@ function stdioEntry(
 /** The container command that puts a server behind the URL `docker` prints. */
 function dockerRun(target: Resolved): string {
   return [
-    "docker run -d --name outlook-skill",
+    "docker run -d --name outlook-mcp",
     `-p 127.0.0.1:${target.port}:${target.port}`,
-    "-v outlook-skill-home:/data",
+    "-v outlook-mcp-home:/data",
     `-e ${envName}=${target.clientId || clientIdPlaceholder}`,
     target.image,
   ].join(" ");
@@ -288,7 +288,7 @@ const definitions: Record<ClientId, Definition> = {
       (target) => `Start the container first: ${dockerRun(target)}`,
       // The device-code flow needs no port of its own, which is what lets a
       // container sign a mailbox in without a browser inside it.
-      "Then sign in through it: docker exec outlook-skill outlook login prints the URL and code a person enters in any browser on the host.",
+      "Then sign in through it: docker exec outlook-mcp outlook login prints the URL and code a person enters in any browser on the host.",
       "The client id is given to the container, not to this entry, so nothing written here carries one.",
       "Nothing on that port authenticates: publish it on 127.0.0.1, and name every other Host you reach it by in the container's OUTLOOK_MCP_ALLOWED_HOSTS.",
     ],

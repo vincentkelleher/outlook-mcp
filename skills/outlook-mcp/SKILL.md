@@ -1,5 +1,5 @@
 ---
-name: outlook-skill
+name: outlook-mcp
 description: Read, search, and draft Outlook email through Microsoft Graph, with device-code sign-in cached on disk. Use when the user asks to find, inspect, summarise, or search messages in their Outlook mailbox, or to write a draft, reply draft, or forward draft. Cannot send mail: a person sends.
 compatibility: Node 22.18 or newer to run the sources, or Node 20 with a built dist. Needs OUTLOOK_OAUTH_CLIENT_ID.
 ---
@@ -23,8 +23,8 @@ export OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id
 Install from a checkout, which is the only supported path:
 
 ```bash
-git clone https://github.com/vincentkelleher/outlook-skill
-cd outlook-skill && npm ci && npm run build
+git clone https://github.com/vincentkelleher/outlook-mcp
+cd outlook-mcp && npm ci && npm run build
 ```
 
 `node dist/index.js config <client> --write` then registers the server with
@@ -91,7 +91,7 @@ needed: while the flow is unfinished it still reports `No Outlook session`, and
 running `login --background --json` again then says `authorized` instead of
 starting a second sign-in.
 
-The refreshable session lives at `~/.outlook-skill/msal-cache.json`, directory
+The refreshable session lives at `~/.outlook-mcp/msal-cache.json`, directory
 `0700` and file `0600`, and later calls refresh it silently.
 
 ## Drafting rules

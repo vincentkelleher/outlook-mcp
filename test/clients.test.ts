@@ -99,10 +99,10 @@ test("Docker points at the URL the container serves, and says how to start it", 
   const notes = noteText("docker");
   assert.match(
     notes,
-    /docker run -d --name outlook-skill -p 127\.0\.0\.1:3939:3939 -v outlook-skill-home:\/data -e OUTLOOK_OAUTH_CLIENT_ID=/,
+    /docker run -d --name outlook-mcp -p 127\.0\.0\.1:3939:3939 -v outlook-mcp-home:\/data -e OUTLOOK_OAUTH_CLIENT_ID=/,
   );
-  assert.match(notes, /ghcr\.io\/vincentkelleher\/outlook-skill:\d/);
-  assert.match(notes, /docker exec outlook-skill outlook login/);
+  assert.match(notes, /ghcr\.io\/vincentkelleher\/outlook-mcp:\d/);
+  assert.match(notes, /docker exec outlook-mcp outlook login/);
   assert.match(notes, /OUTLOOK_MCP_ALLOWED_HOSTS/);
   // There is no client file that holds a URL for "Docker": paste, do not write.
   assert.match(
