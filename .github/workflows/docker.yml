@@ -108,6 +108,11 @@ jobs:
   smoke:
     name: Build and run it
     needs: gate
+    # Nothing to publish and nothing to prove: a release hop that cut no version
+    # has already been built, run and published by the push that came before it,
+    # so the run would only warm a cache it is not allowed to write. A pull
+    # request still builds, because there the build is the whole point.
+    if: needs.gate.outputs.publish == 'true' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       # The same source the image is published from: a release tests the tag, not
@@ -124,8 +129,15 @@ jobs:
           context: .
           load: true
           tags: outlook-mcp:smoke
+          # GitHub issues a read-only cache token to `workflow_run` in the
+          # default-branch context (the release hop arrives that way), and a
+          # denied export surfaces as a failed build *after* the image is built.
+          # Docker's own guidance for that is `ignore-error=true`: the `push` runs
+          # are what populate the cache, and every run restores from it. It
+          # swallows other export failures too, which costs minutes and never
+          # correctness.
           cache-from: type=gha,scope=smoke
-          cache-to: type=gha,mode=min,scope=smoke
+          cache-to: type=gha,mode=min,scope=smoke,ignore-error=true
 
       - name: It serves, and says so
         run: |
@@ -234,5 +246,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=smoke
-          cache-to: type=gha,mode=min,scope=smoke
+          # `ignore-error=true` for the reason given in the smoke job: on a
+          # release this job runs from a `workflow_run`, which cannot write here.
+          cache-to: type=gha,mode=min,scope=smoke,ignore-error=true
           annotations: ${{ steps.meta.outputs.annotations }}
