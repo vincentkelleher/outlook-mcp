@@ -34,7 +34,7 @@ jobs:
         with:
           context: .
           load: true
-          tags: outlook-skill:smoke
+          tags: outlook-mcp:smoke
           cache-from: type=gha,scope=smoke
           cache-to: type=gha,mode=min,scope=smoke
 
@@ -43,9 +43,9 @@ jobs:
           set -euo pipefail
           docker run -d --name smoke \
             -p 127.0.0.1:3939:3939 \
-            -v outlook-skill-smoke:/data \
+            -v outlook-mcp-smoke:/data \
             -e OUTLOOK_OAUTH_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
-            outlook-skill:smoke
+            outlook-mcp:smoke
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3939/health > body.json; then break; fi
             sleep 1
@@ -74,16 +74,16 @@ jobs:
       - name: The CLI in the image is the CLI in the README
         run: |
           set -euo pipefail
-          docker run --rm outlook-skill:smoke --help | grep -q 'serve \[options\]'
+          docker run --rm outlook-mcp:smoke --help | grep -q 'serve \[options\]'
           # `docker exec` starts a program, not the entrypoint, so this is the
           # form the README gives.
           docker exec smoke outlook config docker | grep -q '127.0.0.1:3939/mcp'
           # A `.env` in the layer would configure every container built from it,
           # because the entry reads one from its working directory.
-          docker run --rm --entrypoint sh outlook-skill:smoke -c 'test ! -e /app/.env'
+          docker run --rm --entrypoint sh outlook-mcp:smoke -c 'test ! -e /app/.env'
           # And it ships no session: /data is empty until somebody signs in, and
           # nothing is built into that volume.
-          test -z "$(docker run --rm --entrypoint sh outlook-skill:smoke -c 'ls -A /data')"
+          test -z "$(docker run --rm --entrypoint sh outlook-mcp:smoke -c 'ls -A /data')"
 
       - name: Why it died
         if: failure()

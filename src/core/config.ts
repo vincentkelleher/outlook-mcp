@@ -155,7 +155,7 @@ export function scopesFor(readonly: boolean): string[] {
 }
 
 export function loadConfig(env: Env = loadEnvFile()): Config {
-  const home = env.OUTLOOK_SKILL_HOME || join(homeDir(env), ".outlook-skill");
+  const home = env.OUTLOOK_MCP_HOME || join(homeDir(env), ".outlook-mcp");
   const tenant = env.OUTLOOK_OAUTH_TENANT || "consumers";
   return {
     clientId: env.OUTLOOK_OAUTH_CLIENT_ID || undefined,

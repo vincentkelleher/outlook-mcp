@@ -11,6 +11,18 @@ agent can drive. Everything published before this was the Bun CLI.
 
 ### Changed
 
+- **Renamed to `outlook-mcp`.** The package, the repository
+  (`github.com/vincentkelleher/outlook-mcp`), the image
+  (`ghcr.io/vincentkelleher/outlook-mcp`), the container and volume names in the
+  documented commands, and the skill directory and `name` all take the new name;
+  the `bin` was already `outlook-mcp`. Two names in it are **breaking** and come
+  with no shim and no fallback: the state directory is now `~/.outlook-mcp` and
+  its variable is `OUTLOOK_MCP_HOME`, replacing `~/.outlook-skill` and
+  `OUTLOOK_SKILL_HOME`. `mv ~/.outlook-skill ~/.outlook-mcp` keeps a signed-in
+  session; without it the next command asks you to sign in again, and anything
+  that set `OUTLOOK_SKILL_HOME` should point at `OUTLOOK_MCP_HOME`. Clients configured against the old checkout path, image
+  tag or `npx skills add vincentkelleher/outlook-skill` need updating too, and
+  the previously installed skill should be removed before adding the new one.
 - Migrated from `@modelcontextprotocol/sdk` v1 to the split TypeScript SDK v2
   packages, pinned to 2.3.1. Stdio now uses `serveStdio(createServer)` with
   injected dependencies; the client package is needed only for tests.
@@ -29,11 +41,11 @@ agent can drive. Everything published before this was the Bun CLI.
   request is admitted on its `Host` and `Origin`, because the transport
   authenticates nobody; bodies are capped at 4 MiB, sessions at 32, and a session
   with nothing connected retires after `OUTLOOK_MCP_SESSION_IDLE_MINUTES`.
-- **A Docker image**, published to `ghcr.io/vincentkelleher/outlook-skill` on tag
+- **A Docker image**, published to `ghcr.io/vincentkelleher/outlook-mcp` on tag
   for `linux/amd64` and `linux/arm64`: multi-stage, `node:24-alpine`, no dev
   dependencies, running as `node`, dumb-init as PID 1 so SIGTERM lands and the
   detached sign-in child is reaped, and `/data` as the only state — session, sign-in
-  state, attachments. `docker build -t outlook-skill .` builds the same file CI
+  state, attachments. `docker build -t outlook-mcp .` builds the same file CI
   publishes from.
 - **`config docker`**, printing the remote entry (`{"type":"http",
 "url":"http://127.0.0.1:3939/mcp"}`) with the run command, the
@@ -69,12 +81,12 @@ agent can drive. Everything published before this was the Bun CLI.
   loggers (`cli`, `mcp`, `http`, `auth`, `graph`, `login`, `storage`, `client`) and
   a session id on every line from an HTTP session say who did what.
 - **Atomic token-cache writes**, and one re-read-and-retry on a silent-refresh
-  failure, so several clients can share `~/.outlook-skill/msal-cache.json`.
+  failure, so several clients can share `~/.outlook-mcp/msal-cache.json`.
 - **`bin`: `outlook-mcp`**, `files`, `engines`, and a `prepare` build, for
   installs from GitHub. No npm publish, ever: this project is distributed from
   the repository alone.
 - **Documentation**: `SECURITY.md`, this file, `docs/clients.md` with a
-  per-client install matrix, `skills/outlook-skill/references/setup.md` for the
+  per-client install matrix, `skills/outlook-mcp/references/setup.md` for the
   Entra ID registration, and a rewritten README.
 - **CI for the image** in `.github/workflows/docker.yml`: build, run, and check
   the health route, the `Host`/`Origin` refusals, and that the layer carries no
@@ -95,9 +107,10 @@ agent can drive. Everything published before this was the Bun CLI.
   `bunfig.toml`. Sources run directly under Node's native type stripping
   (Node 22.18+ or 23.6+), and `npm run build` emits `dist/` for Node 20.
 - **The skill moved** from `SKILL.md` in the repository root to
-  `skills/outlook-skill/SKILL.md`, because a root `SKILL.md` shadows nested ones
-  for the skills installer. The `name` is unchanged, so an existing install keeps
-  working — re-run `npx skills add` to pick up the new copy.
+  `skills/outlook-mcp/SKILL.md`, because a root `SKILL.md` shadows nested ones
+  for the skills installer. It is named `outlook-mcp` to match the directory, so
+  an install of the old `outlook-skill` is a separate skill now: remove it and
+  re-run `npx skills add`.
 - **`scripts/outlook.ts` was split** into `src/core/{config,auth,device-login,graph,errors}.ts`
   with `src/tools.ts` as the single tool registry, and deleted. There is no
   compatibility shim.

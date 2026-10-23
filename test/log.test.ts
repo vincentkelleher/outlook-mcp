@@ -161,7 +161,7 @@ test("a value that must never be logged is gone from both formats", () => {
     const out = captureLogs({ level: "debug", format });
     try {
       logger("auth").debug("token cache rewritten", {
-        cachePath: "/home/ana/.outlook-skill/msal-cache.json",
+        cachePath: "/home/ana/.outlook-mcp/msal-cache.json",
         accessToken: secret,
         refresh_token: secret,
         authorization: `Bearer ${secret}`,

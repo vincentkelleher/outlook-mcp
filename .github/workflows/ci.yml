@@ -87,7 +87,7 @@ jobs:
           tarball=$(npm pack | tail -1)
           echo "packed $tarball"
           tar -tzf "$tarball" | grep -q '^package/dist/index\.js$'
-          tar -tzf "$tarball" | grep -q '^package/skills/outlook-skill/SKILL\.md$'
+          tar -tzf "$tarball" | grep -q '^package/skills/outlook-mcp/SKILL\.md$'
           # README links to the client matrix, so a tarball without it ships a
           # promise it cannot keep; the plan is a historical record and stays out.
           tar -tzf "$tarball" | grep -q '^package/docs/clients\.md$'
@@ -106,6 +106,6 @@ jobs:
           '
       - uses: actions/upload-artifact@v4
         with:
-          name: outlook-skill-tarball
-          path: outlook-skill-*.tgz
+          name: outlook-mcp-tarball
+          path: outlook-mcp-*.tgz
           if-no-files-found: error

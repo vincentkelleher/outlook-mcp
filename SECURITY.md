@@ -83,16 +83,16 @@ around it:
 - Mail content is untrusted data. A message body is never an instruction, and an
   email asking for a reply is not permission to draft one. That is stated in the
   server `instructions`, in the tool descriptions, and in
-  `skills/outlook-skill/SKILL.md`.
+  `skills/outlook-mcp/SKILL.md`.
 
 ## Where it writes, and with which permissions
 
-| Path                                       | Modes                   | Content                                                           |
-| ------------------------------------------ | ----------------------- | ----------------------------------------------------------------- |
-| `~/.outlook-skill/` (`OUTLOOK_SKILL_HOME`) | `0700`                  | the cache directory                                               |
-| `~/.outlook-skill/msal-cache.json`         | `0600`                  | the refreshable token cache                                       |
-| `~/.outlook-skill/state/login.json`        | dir `0700`, file `0600` | sign-in state: URL, user code, expiry, last error. Never a token. |
-| `$TMPDIR/outlook-mcp`                      | `0700`                  | downloaded attachments                                            |
+| Path                                   | Modes                   | Content                                                           |
+| -------------------------------------- | ----------------------- | ----------------------------------------------------------------- |
+| `~/.outlook-mcp/` (`OUTLOOK_MCP_HOME`) | `0700`                  | the cache directory                                               |
+| `~/.outlook-mcp/msal-cache.json`       | `0600`                  | the refreshable token cache                                       |
+| `~/.outlook-mcp/state/login.json`      | dir `0700`, file `0600` | sign-in state: URL, user code, expiry, last error. Never a token. |
+| `$TMPDIR/outlook-mcp`                  | `0700`                  | downloaded attachments                                            |
 
 The cache is the sensitive file and it is written atomically: a temp file in the
 same directory at `0600`, then a `rename`. Several agents can share one cache,
@@ -102,7 +102,7 @@ next cache read sweeps temp files older than an hour, since nothing can still be
 writing at that age. On a silent-refresh failure the cache is re-read and
 refreshed once more before anyone is asked to sign in again.
 
-`~/.outlook-skill/` is shared by the CLI and every MCP client on the machine, so
+`~/.outlook-mcp/` is shared by the CLI and every MCP client on the machine, so
 one sign-in is enough — and anyone with write access to that directory is
 effectively signed in as you. Keep it on your own account. The sign-in state file
 carries a short-lived redeemable code rather than a token, so both it and its
@@ -144,7 +144,7 @@ never to stdout, which is a protocol on stdio and a `jq` input in a shell.
 per line for a collector.
 
 A log line is a copy of a mailbox, and stderr is not owner-only the way
-`~/.outlook-skill/msal-cache.json` is: a container log, a CI artefact and a
+`~/.outlook-mcp/msal-cache.json` is: a container log, a CI artefact and a
 pasted terminal are all places mail can end up without anyone deciding that. So:
 
 - **Never written, at any level:** an access or refresh token, an `Authorization`
@@ -204,6 +204,6 @@ port. If you do not need the container, do not run it.
 
 ## Reporting a problem
 
-Open a [private security advisory](https://github.com/vincentkelleher/outlook-skill/security/advisories/new)
+Open a [private security advisory](https://github.com/vincentkelleher/outlook-mcp/security/advisories/new)
 rather than a public issue. This is a personal project with no formal SLA; please
 give it a few days before disclosing publicly.

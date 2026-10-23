@@ -32,7 +32,7 @@ import { AuthRequiredError, sessionProblem } from "../src/core/errors.ts";
 const clientId = "00000000-0000-0000-0000-000000000000";
 const consumers = "https://login.microsoftonline.com/consumers/";
 
-const tempDir = () => mkdtempSync(join(tmpdir(), "outlook-skill-"));
+const tempDir = () => mkdtempSync(join(tmpdir(), "outlook-mcp-"));
 const tempCache = () => join(tempDir(), "msal-cache.json");
 const testConfig = (env: Env = {}) =>
   loadConfig({ HOME: tempDir(), OUTLOOK_OAUTH_CLIENT_ID: clientId, ...env });
@@ -398,11 +398,8 @@ test("auth status reports the cached account, authority and cache path", async (
     OUTLOOK_OAUTH_CLIENT_ID: clientId,
   });
   assert.equal(config.authority, consumers);
-  assert.equal(
-    config.cachePath,
-    join(home, ".outlook-skill", "msal-cache.json"),
-  );
-  assert.equal(config.stateDir, join(home, ".outlook-skill", "state"));
+  assert.equal(config.cachePath, join(home, ".outlook-mcp", "msal-cache.json"));
+  assert.equal(config.stateDir, join(home, ".outlook-mcp", "state"));
 
   const signedIn = fakeMsal({
     accounts: [[{ username: "someone@example.com" }]],

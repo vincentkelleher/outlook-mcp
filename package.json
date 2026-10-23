@@ -1,5 +1,5 @@
 {
-  "name": "outlook-skill",
+  "name": "outlook-mcp",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -7,7 +7,7 @@
   "description": "Outlook email for AI agents: a Node CLI and MCP server that reads mail and creates drafts, never sends it.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vincentkelleher/outlook-skill.git"
+    "url": "git+https://github.com/vincentkelleher/outlook-mcp.git"
   },
   "keywords": [
     "outlook",

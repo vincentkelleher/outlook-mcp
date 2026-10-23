@@ -11,7 +11,7 @@ const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const clientId = "00000000-0000-0000-0000-000000000000";
 
 test("the .env file fills in what the environment is missing", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "outlook-skill-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "outlook-mcp-config-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(
     join(dir, ".env"),
@@ -56,17 +56,14 @@ test("defaults keep an existing install on its current cache", () => {
     config.authority,
     "https://login.microsoftonline.com/consumers/",
   );
-  assert.equal(
-    config.cachePath,
-    "/home/someone/.outlook-skill/msal-cache.json",
-  );
-  assert.equal(config.stateDir, "/home/someone/.outlook-skill/state");
+  assert.equal(config.cachePath, "/home/someone/.outlook-mcp/msal-cache.json");
+  assert.equal(config.stateDir, "/home/someone/.outlook-mcp/state");
   assert.equal(config.attachmentDir, join(tmpdir(), "outlook-mcp"));
   assert.equal(config.readonly, false);
 
   const moved = loadConfig({
     HOME: "/home/someone",
-    OUTLOOK_SKILL_HOME: "/srv/outlook",
+    OUTLOOK_MCP_HOME: "/srv/outlook",
     OUTLOOK_MCP_STATE_DIR: "/srv/state",
     OUTLOOK_MCP_ATTACHMENT_DIR: "/srv/attachments",
   });

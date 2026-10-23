@@ -44,7 +44,7 @@ ENV NODE_ENV=production \
     # The session, the sign-in state and the downloaded attachments. The image
     # ships none of them; /data is the volume, so `docker run -v` is what
     # decides where they live on the host.
-    OUTLOOK_SKILL_HOME=/data \
+    OUTLOOK_MCP_HOME=/data \
     OUTLOOK_MCP_ATTACHMENT_DIR=/data/attachments \
     # A server bound to 127.0.0.1 *inside* the container cannot be reached
     # through a published port: the traffic arrives on the container's own
@@ -84,6 +84,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD node -e "const p = process.env.OUTLOOK_MCP_PORT || 3939; fetch('http://127.0.0.1:' + p + '/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
 
 # The entry is fixed, so anything after the image name is an outlook command:
-# `docker run … login`, `docker exec outlook-skill outlook emails list`.
+# `docker run … login`, `docker exec outlook-mcp outlook emails list`.
 ENTRYPOINT ["dumb-init", "--", "outlook"]
 CMD ["serve", "--http"]

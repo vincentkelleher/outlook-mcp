@@ -31,7 +31,7 @@ function outlook(home: string, ...args: string[]) {
 }
 
 function testHome(t: { after: (fn: () => void) => void }) {
-  const home = mkdtempSync(join(tmpdir(), "outlook-skill-e2e-"));
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-e2e-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   return home;
 }
@@ -149,8 +149,8 @@ test("config names every client when one is misspelt", (t) => {
 
 test("logout command removes the saved session", (t) => {
   const home = testHome(t);
-  const cache = join(home, ".outlook-skill", "msal-cache.json");
-  mkdirSync(join(home, ".outlook-skill"), { recursive: true });
+  const cache = join(home, ".outlook-mcp", "msal-cache.json");
+  mkdirSync(join(home, ".outlook-mcp"), { recursive: true });
   writeFileSync(cache, "session");
 
   const result = outlook(home, "logout");

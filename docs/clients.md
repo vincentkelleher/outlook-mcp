@@ -1,7 +1,7 @@
 # Installing on each client
 
 `<DIST>` is the absolute path to the built entry,
-`<checkout>/outlook-skill/dist/index.js`. The server name is `outlook`
+`<checkout>/outlook-mcp/dist/index.js`. The server name is `outlook`
 everywhere: Pi and Claude Code require `[A-Za-z0-9_-]`, Codex additionally allows
 `: @ / .`, and VS Code recommends camelCase without enforcing it, so one name
 works for all of them.
@@ -9,8 +9,8 @@ works for all of them.
 ## The supported path: clone and build
 
 ```bash
-git clone https://github.com/vincentkelleher/outlook-skill
-cd outlook-skill
+git clone https://github.com/vincentkelleher/outlook-mcp
+cd outlook-mcp
 npm ci
 npm run build
 ```
@@ -47,10 +47,10 @@ Two shortcuts exist and neither is documented by npm as supported:
 
 ```bash
 # git specifier: needs git on the PATH
-npx -y github:vincentkelleher/outlook-skill#v0.1.0
+npx -y github:vincentkelleher/outlook-mcp#v0.1.0
 
 # release tarball produced by `npm pack` in CI
-npm install https://github.com/vincentkelleher/outlook-skill/releases/download/v0.1.0/outlook-skill-0.1.0.tgz
+npm install https://github.com/vincentkelleher/outlook-mcp/releases/download/v0.1.0/outlook-mcp-0.1.0.tgz
 ```
 
 Checked against docs.npmjs.com:
@@ -311,11 +311,11 @@ plus args:
 ## Docker
 
 ```bash
-docker run -d --name outlook-skill \
+docker run -d --name outlook-mcp \
   -p 127.0.0.1:3939:3939 \
-  -v outlook-skill-home:/data \
+  -v outlook-mcp-home:/data \
   -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
-  ghcr.io/vincentkelleher/outlook-skill:0.1.0
+  ghcr.io/vincentkelleher/outlook-mcp:0.1.0
 ```
 
 The container serves Streamable HTTP, so the entry a client reads is a URL and
@@ -330,7 +330,7 @@ not a command — there is no `node`, no path, and no client id in it:
 ```
 
 `config docker` prints exactly that, with the run command, the sign-in command
-(`docker exec outlook-skill outlook login`) and the loopback warning around it.
+(`docker exec outlook-mcp outlook login`) and the loopback warning around it.
 `--write` refuses for this one, honestly: there is no client file that owns a URL
 for "Docker", and the client that consumes it is named by whoever asks.
 
@@ -341,7 +341,7 @@ checked none of your clients for this particular shape. The client list elsewher
 on this page is for stdio.
 
 Two things differ operationally, and neither is a secret: the session lives in the
-`/data` volume rather than in `~/.outlook-skill`, and read-only mode is set on the
+`/data` volume rather than in `~/.outlook-mcp`, and read-only mode is set on the
 container (`-e OUTLOOK_MCP_READONLY=1`), not per command — which is the same rule
 as everywhere else, one decision made before any command runs.
 
