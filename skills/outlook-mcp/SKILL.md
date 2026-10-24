@@ -39,7 +39,7 @@ repository's `docs/clients.md` is the matrix for every client.
 | `list_emails`                                                                                                                 | One folder, newest first, `folder`/`unread`/`limit`/`cursor` |
 | `search_emails`                                                                                                               | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`    |
 | `get_email`                                                                                                                   | One message, full plain-text body                            |
-| `list_attachments` / `download_attachment`                                                                                    | Metadata first; a file lands in the server's attachment dir  |
+| `list_attachments` / `download_attachment`                                                                                    | Metadata first; read the returned session-scoped MCP resource  |
 | `auth_status`                                                                                                                 | Session, authority, mode, scopes, last sign-in error         |
 | `login` / `logout`                                                                                                            | Start sign-in without waiting / delete the session           |
 | `mark_read` / `mark_unread`                                                                                                   | Flip the read flag on 1-100 ids, no content touched          |
@@ -48,6 +48,17 @@ repository's `docs/clients.md` is the matrix for every client.
 List results carry `items` and `nextCursor`: pass `nextCursor` back as `cursor`
 for the next page. Bodies only ever come from `get_email`, and attachment
 content never comes back inline unless asked for.
+
+`download_attachment` returns a `resource_link` by default. Use `resources/read`
+with its URI to retrieve a base64 blob, then decode/save it in your own workspace
+if a file is needed; do not try to read `/data/attachments` on the client.
+Links expire with their originating MCP session; request a new link after
+reconnecting. The decoded size limit defaults to 20 MiB and is configurable via
+`OUTLOOK_MCP_MAX_ATTACHMENT_BYTES`. Content is fetched on each read, not cached.
+Your MCP client must support resource reads and materialization. Use
+`delivery: "server_file"` only when the server filesystem is actually accessible;
+`dir` requires that explicit mode. `encoding: "base64"` returns inline content up
+to 64 KiB; oversized requests fail instead of silently falling back to a path.
 
 The flag tools take ids, not a query, and return every id with the flag Graph
 now says it carries — an id Graph refused sits in `failed` while the rest still

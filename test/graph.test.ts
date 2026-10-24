@@ -199,6 +199,31 @@ test("attachments follow the nextLink then fetch each id", async () => {
   );
 });
 
+test("attachment metadata requests exclude content and avoid per-item body fetches", async () => {
+  const { graph, requests } = graphFor();
+  assert.deepEqual(await graph.listAttachments("a/b", true), [
+    { id: "one/two" },
+    { id: "two" },
+  ]);
+  assert.equal(requests.length, 2);
+  for (const request of requests)
+    assert.deepEqual(request.select, [
+      "id",
+      "name",
+      "contentType",
+      "size",
+      "isInline",
+    ]);
+  await graph.getAttachment("a/b", "c/d", true);
+  assert.deepEqual(requests[2].select, [
+    "id",
+    "name",
+    "contentType",
+    "size",
+    "isInline",
+  ]);
+});
+
 test("a single attachment encodes both ids", async () => {
   const { graph, requests } = graphFor();
   await graph.getAttachment("a/b", "c/d");

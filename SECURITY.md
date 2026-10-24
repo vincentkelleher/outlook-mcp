@@ -118,14 +118,24 @@ the code is on disk only while a flow is live.
 
 Two directions, both bounded:
 
-- **Download** (`download_attachment`): writes only inside
-  `OUTLOOK_MCP_ATTACHMENT_DIR` (default `$TMPDIR/outlook-mcp`), mode `0600`. A
-  requested `dir` is resolved inside that root and checked twice — as a path and
-  as a real path — so neither `../` nor a symlink escapes it, and a Graph
-  filename is reduced to its final segment before it reaches the disk. Base64
-  content is returned inline only when explicitly requested and only up to 64
-  KiB; above that the result says so and gives the file path instead, which keeps
-  a large attachment out of a model's context by default.
+- **Download** (`download_attachment`): returns an opaque, session-scoped MCP
+  resource link by default. Only the originating connection/session can resolve
+  it; closing or retiring the session invalidates its handles. At most 1024
+  distinct handles are retained per session, with no content cache or disk write.
+  Content is fetched from Graph on each read, so mailbox access is still checked.
+  A resource handle is not authentication: HTTP remains local-only and unauthenticated.
+  The decoded download/resource limit defaults to 20 MiB, configurable through
+  `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES`; reported size is checked before fetching
+  content, and actual decoded size before returning it. Graph JSON bodies are
+  buffered in memory; the limit is not a streaming network-response limit.
+  Binary resources carry base64 (about 33% overhead), not automatic client files.
+  Explicit `encoding: "base64"` is capped at 64 KiB; larger requests fail rather
+  than returning an inaccessible server path.
+  Explicit `delivery: "server_file"` writes only inside
+  `OUTLOOK_MCP_ATTACHMENT_DIR` (default `$TMPDIR/outlook-mcp`), mode `0600`.
+  A requested `dir` requires this mode and is checked as both a path and a real
+  path, so neither traversal nor a symlink escapes it. Sender filenames are
+  reduced to one safe leaf for both resource links and disk writes.
 - **Upload** (`add_attachment`): a **hard 3 MB cap** on the decoded file, checked
   before any request, with an actionable error and no partial write. Graph needs
   an upload session between 3 and 150 MB and this server has none, so the limit

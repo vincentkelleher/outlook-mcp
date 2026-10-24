@@ -12,6 +12,8 @@ export type Config = {
   cachePath: string;
   stateDir: string;
   attachmentDir: string;
+  /** Maximum decoded attachment size for MCP downloads and resources. */
+  maxAttachmentBytes: number;
   readonly: boolean;
   /** Interface `serve --http` binds: a hostname or an address. */
   httpHost: string;
@@ -164,6 +166,12 @@ export function loadConfig(env: Env = loadEnvFile()): Config {
     stateDir: env.OUTLOOK_MCP_STATE_DIR || join(home, "state"),
     attachmentDir:
       env.OUTLOOK_MCP_ATTACHMENT_DIR || join(tmpdir(), "outlook-mcp"),
+    maxAttachmentBytes: numberFor(
+      "OUTLOOK_MCP_MAX_ATTACHMENT_BYTES",
+      env.OUTLOOK_MCP_MAX_ATTACHMENT_BYTES,
+      20 * 1024 * 1024,
+      Number.MAX_SAFE_INTEGER,
+    ),
     readonly: !["", "0", "false"].includes(
       (env.OUTLOOK_MCP_READONLY ?? "").toLowerCase(),
     ),

@@ -621,6 +621,7 @@ test("download_attachment writes inside the allowed directory only", async (t) =
   const written = await call(client, "download_attachment", {
     messageId: "message-1",
     attachmentId: "attachment-1",
+    delivery: "server_file",
   });
   assert.equal(written.isError, undefined);
   const payload = JSON.parse(textOf(written));
@@ -635,6 +636,7 @@ test("download_attachment writes inside the allowed directory only", async (t) =
     messageId: "message-1",
     attachmentId: "attachment-1",
     dir: "case-7",
+    delivery: "server_file",
     encoding: "base64",
   });
   const inlinePayload = JSON.parse(textOf(inline));
@@ -649,13 +651,15 @@ test("download_attachment writes inside the allowed directory only", async (t) =
     attachmentId: "oversized",
     encoding: "base64",
   });
-  const bigPayload = JSON.parse(textOf(tooBig));
-  assert.equal(bigPayload.bytes, maxInlineBytes + 1);
-  assert.equal(bigPayload.contentBase64, undefined, "over the inline cap");
-  assert.match(bigPayload.note, /over the .* inline cap/);
+  assert.equal(tooBig.isError, true);
+  assert.match(textOf(tooBig), /maximum is 65536 bytes/);
+  assert.ok(!existsSync(join(config.attachmentDir, "quarterly.pdf")));
   assert.deepEqual(calls.download, [
     ["message-1", "attachment-1"],
     ["message-1", "attachment-1"],
+    ["message-1", "attachment-1"],
+    ["message-1", "attachment-1"],
+    ["message-1", "oversized"],
     ["message-1", "oversized"],
   ]);
 
@@ -663,6 +667,7 @@ test("download_attachment writes inside the allowed directory only", async (t) =
     const refused = await call(client, "download_attachment", {
       messageId: "message-1",
       attachmentId: "attachment-1",
+      delivery: "server_file",
       dir,
     });
     assert.equal(refused.isError, true, `${dir} was accepted`);
@@ -695,6 +700,7 @@ test("an attachment name from the sender cannot lead the write out of the direct
     const result = await call(client, "download_attachment", {
       messageId: "message-1",
       attachmentId,
+      delivery: "server_file",
     });
     assert.equal(result.isError, undefined, textOf(result));
     const payload = JSON.parse(textOf(result));
@@ -725,6 +731,7 @@ test("an attachment name from the sender cannot lead the write out of the direct
   const refused = await call(client, "download_attachment", {
     messageId: "message-1",
     attachmentId: "attachment-1",
+    delivery: "server_file",
   });
   assert.equal(refused.isError, true);
   assert.match(textOf(refused), /outside the attachment directory/);
@@ -1224,7 +1231,11 @@ test("resources expose folders, the inbox and one message", async (t) => {
   const templates = await client.listResourceTemplates();
   assert.deepEqual(
     templates.resourceTemplates.map((template) => template.uriTemplate).sort(),
-    ["outlook://inbox{?unread,limit}", "outlook://messages/{id}"],
+    [
+      "outlook://attachments/{handle}",
+      "outlook://inbox{?unread,limit}",
+      "outlook://messages/{id}",
+    ],
   );
 
   const folders = await client.readResource({ uri: "outlook://folders" });

@@ -30,6 +30,8 @@ import {
 } from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
 import { logger } from "./core/log.ts";
+import { attachmentContent, safeFileName } from "./core/attachments.ts";
+import type { GraphAttachment } from "./core/attachments.ts";
 
 /** The one place this server writes a file: the attachment directory. */
 const log = logger("storage");
@@ -44,6 +46,15 @@ const log = logger("storage");
 export type ToolDeps = {
   graph: Graph;
   config: Config;
+  attachmentResource?: (
+    messageId: string,
+    attachmentId: string,
+  ) => Promise<{
+    uri: string;
+    name: string;
+    mimeType: string;
+    size?: number;
+  }>;
   authStatus: () => Promise<AuthStatus>;
   startLogin: (config: Config) => void;
   logout: (config: Config) => void;
@@ -131,15 +142,6 @@ const summary =
 /** Inline attachment content only on request, and only while it stays small. */
 export const maxInlineBytes = 64 * 1024;
 
-type GraphAttachment = {
-  id?: string;
-  name?: string;
-  contentType?: string;
-  size?: number;
-  isInline?: boolean;
-  contentBytes?: string;
-};
-
 function metadataOf(attachment: GraphAttachment) {
   return {
     id: attachment.id,
@@ -148,20 +150,6 @@ function metadataOf(attachment: GraphAttachment) {
     size: attachment.size,
     isInline: attachment.isInline,
   };
-}
-
-/**
- * A Graph file name is sender data: only its final segment may reach the disk.
- * Separators are gone by construction, and a name that is empty or only dots has
- * nothing to be called, so it gets a placeholder rather than a relative path.
- */
-function safeFileName(value: string | undefined): string {
-  const leaf = (value ?? "").split(/[\\/]/).pop() ?? "";
-  const cleaned = leaf
-    .replace(/[\u0000-\u001f]/g, "_")
-    .replace(/^\.+/, "")
-    .trim();
-  return cleaned || "attachment";
 }
 
 /**
@@ -351,14 +339,14 @@ const coreTools: Tool[] = [
     }),
     handler: async (deps, { messageId }) => ({
       items: (
-        (await deps.graph.listAttachments(messageId)) as GraphAttachment[]
+        (await deps.graph.listAttachments(messageId, true)) as GraphAttachment[]
       ).map(metadataOf),
     }),
   }),
   tool({
     name: "download_attachment",
     title: "Download attachment",
-    description: `Download one attachment to a file and return { name, path, bytes, contentType }. Writes are confined to the server's attachment directory (OUTLOOK_MCP_ATTACHMENT_DIR, default $TMPDIR/outlook-mcp): a dir outside it is rejected and nothing is written. Set encoding to base64 only when the content must be read inline, and only for files up to ${maxInlineBytes} bytes - larger ones must be read from the returned path.`,
+    description: `Get an attachment as a session-scoped MCP resource link by default. Read it with resources/read; clients must save the resource blob themselves if a local file is needed. No server file is created. Maximum decoded size defaults to 20 MiB (OUTLOOK_MCP_MAX_ATTACHMENT_BYTES). Links expire with the session; request a new link after reconnecting. Use delivery=server_file only when the server filesystem is accessible to you. encoding=base64 explicitly returns inline content up to ${maxInlineBytes} bytes; larger inline requests fail, never fall back to a path.`,
     annotations: read,
     inputSchema: z.strictObject({
       messageId: z.string().min(1).describe("The email's id."),
@@ -366,6 +354,12 @@ const coreTools: Tool[] = [
         .string()
         .min(1)
         .describe("The attachment's id, from list_attachments."),
+      delivery: z
+        .enum(["resource", "server_file"])
+        .optional()
+        .describe(
+          "Defaults to resource. server_file explicitly saves on the server, not the client.",
+        ),
       dir: z
         .string()
         .min(1)
@@ -380,11 +374,40 @@ const coreTools: Tool[] = [
           `Return the file's base64 content in the result too. Omit unless it is needed, and only for attachments up to ${maxInlineBytes} bytes.`,
         ),
     }),
-    handler: async (deps, { messageId, attachmentId, dir, encoding }) => {
-      const attachment = (await deps.graph.getAttachment(
+    handler: async (
+      deps,
+      { messageId, attachmentId, dir, encoding, delivery },
+    ) => {
+      if (dir && delivery !== "server_file")
+        throw new Error(
+          "dir requires delivery=server_file; server paths are not accessible to remote clients.",
+        );
+      if (encoding && delivery === "resource")
+        throw new Error("Choose resource delivery or inline base64, not both.");
+      if (!encoding && delivery !== "server_file") {
+        if (!deps.attachmentResource)
+          throw new Error("Attachment resources require an MCP session.");
+        return {
+          delivery: "resource",
+          ...(await deps.attachmentResource(messageId, attachmentId)),
+        };
+      }
+      const { attachment, bytes } = await attachmentContent(
+        deps.graph,
         messageId,
         attachmentId,
-      )) as GraphAttachment;
+        encoding
+          ? Math.min(maxInlineBytes, deps.config.maxAttachmentBytes)
+          : deps.config.maxAttachmentBytes,
+      );
+      if (encoding && delivery !== "server_file")
+        return {
+          delivery: "inline",
+          name: attachment.name,
+          bytes: bytes.byteLength,
+          contentType: attachment.contentType,
+          contentBase64: bytes.toString("base64"),
+        };
       // The name is the sender's, so it goes into `attachmentPath` raw and what
       // comes back is the one name that is safe to write and to report.
       const { name, path } = attachmentPath(
@@ -392,7 +415,6 @@ const coreTools: Tool[] = [
         dir,
         attachment.name ?? attachmentId,
       );
-      const bytes = Buffer.from(attachment.contentBytes ?? "", "base64");
       writeNoFollow(path, bytes);
       // A file landed on this machine, which is the only side effect this server
       // has. The directory is the operator's own, so the name of it is theirs to
@@ -402,24 +424,14 @@ const coreTools: Tool[] = [
         contentType: attachment.contentType,
         ...(log.detailed ? { path } : {}),
       });
-      const inline =
-        encoding === "base64" && bytes.byteLength <= maxInlineBytes;
-      if (encoding === "base64" && !inline)
-        log.info("inline base64 refused over the cap", {
-          bytes: bytes.byteLength,
-          capBytes: maxInlineBytes,
-        });
       return {
+        delivery: "server_file",
         name,
         path,
         bytes: bytes.byteLength,
         contentType: attachment.contentType,
-        ...(inline ? { contentBase64: attachment.contentBytes } : {}),
-        ...(encoding === "base64" && !inline
-          ? {
-              note: `Base64 omitted: ${bytes.byteLength} bytes is over the ${maxInlineBytes} inline cap. Read the file at ${path} instead.`,
-            }
-          : {}),
+        note: "This path is on the server filesystem, not the client.",
+        ...(encoding ? { contentBase64: bytes.toString("base64") } : {}),
       };
     },
   }),

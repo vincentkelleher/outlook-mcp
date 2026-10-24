@@ -398,12 +398,17 @@ export function createGraph(deps: GraphDeps) {
       .get();
   }
 
-  function getAttachment(messageId: string, attachmentId: string) {
-    return client
-      .api(
-        `${messagePath(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      )
-      .get();
+  function getAttachment(
+    messageId: string,
+    attachmentId: string,
+    metadataOnly = false,
+  ) {
+    const request = client.api(
+      `${messagePath(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    );
+    if (metadataOnly)
+      request.select(["id", "name", "contentType", "size", "isInline"]);
+    return request.get();
   }
 
   async function listFolders() {
@@ -412,14 +417,15 @@ export function createGraph(deps: GraphDeps) {
     );
   }
 
-  async function listAttachments(messageId: string) {
+  async function listAttachments(messageId: string, metadataOnly = false) {
     const path = `${messagePath(messageId)}/attachments`;
     const collected: { id: string }[] = [];
     let target: string | undefined = path;
     while (target) {
-      const collection: GraphCollection = await client
-        .api(target)
-        .get<GraphCollection>();
+      const request = client.api(target);
+      if (metadataOnly)
+        request.select(["id", "name", "contentType", "size", "isInline"]);
+      const collection = await request.get<GraphCollection>();
       collected.push(...collection.value);
       // Followed without assertGraphCursor, unlike a cursor that arrives from a
       // model: this link came back from Graph over TLS on a request we chose, so
@@ -427,6 +433,7 @@ export function createGraph(deps: GraphDeps) {
       // can supply.
       target = collection["@odata.nextLink"];
     }
+    if (metadataOnly) return collected;
     return Promise.all(collected.map(({ id }) => getAttachment(messageId, id)));
   }
 

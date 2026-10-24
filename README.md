@@ -70,8 +70,9 @@ the timeout units and the honest list of what is unverified live in
 ## Run it in a container
 
 The image runs the server over Streamable HTTP on port 3939 and keeps nothing on
-its own filesystem: the session, the sign-in state and downloaded attachments all
-live in `/data`, which is a volume.
+its own filesystem: the session and sign-in state live in `/data`, which is a
+volume. Attachments use MCP resources by default and are not saved there; explicit
+server-local downloads also live in `/data`.
 
 ```bash
 docker run -d --name outlook-mcp \
@@ -159,7 +160,7 @@ mode.
 | `search_emails`        | Whole mailbox in Graph search syntax, `limit` ≤ 1000                       |
 | `get_email`            | One message with its full plain-text body                                  |
 | `list_attachments`     | Attachment metadata only: id, name, type, size, isInline                   |
-| `download_attachment`  | Writes a file inside the allowed attachment directory and returns the path |
+| `download_attachment`  | Returns a session-scoped MCP resource link; server-local saving is opt-in |
 | `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error           |
 | `login`                | Starts sign-in and returns at once with the URL and code                   |
 | `logout`               | Deletes the saved session (marked destructive)                             |
@@ -176,6 +177,40 @@ mode.
 List results carry `items` and, when there is more to read, `nextCursor` — pass
 it back as `cursor`. Resources are published too: `outlook://folders`,
 `outlook://inbox`, and `outlook://messages/{id}`.
+
+### Attachment resources
+
+Call `download_attachment` with `messageId` and `attachmentId` to receive an MCP
+`resource_link` to `outlook://attachments/<opaque-handle>` (also described in
+`structuredContent`). Call `resources/read` with that URI to retrieve its binary
+content as a base64 `blob`. This uses the existing MCP connection: no download
+URL, reverse proxy, shared volume, or server-side file is needed.
+
+The client must support resource links and resource reads. If the agent needs a
+local file, its MCP integration must decode and save the blob in the **client's**
+workspace, preferably without putting base64 into model context. MCP resources
+do not automatically create client-side files.
+
+Links belong to the connection/session that issued them, and expire when that
+session closes or is retired for inactivity. After reconnecting in a new session,
+call `download_attachment` again. Content is retrieved from Graph on every read,
+not cached; deletion or revoked access can make a previously issued link unreadable.
+Each session holds at most 1024 distinct attachment handles; repeated requests for
+the same attachment reuse its handle.
+
+The default decoded size limit is **20 MiB**, configurable with
+`OUTLOOK_MCP_MAX_ATTACHMENT_BYTES`. Metadata is checked before fetching content,
+and actual decoded size is checked before returning it. Base64 adds roughly 33%
+to the response size; clients may impose lower response limits. Resource reads
+are not chunked binary streaming, and Graph's JSON response is buffered in memory.
+
+For compatibility, `delivery: "server_file"` explicitly saves inside
+`OUTLOOK_MCP_ATTACHMENT_DIR` and returns a **server-local** path; `dir` requires
+this mode. `encoding: "base64"` explicitly returns inline content up to 64 KiB
+(without writing a file unless `server_file` was also selected). Oversized inline
+requests fail with an actionable error, never silently fall back to a path.
+This changes the previous default: clients relying on a returned filesystem path
+must now request `delivery: "server_file"`.
 
 ### Nothing here can send mail
 
@@ -231,7 +266,8 @@ carries, including the ids it refused.
 | `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                     |
 | `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                  |
 | `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                              |
-| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                        |
+| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | Allowed directory for explicit `delivery: "server_file"` downloads. |
+| `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES` | `20971520` | Maximum decoded MCP attachment download/resource size in bytes (20 MiB); positive integer. |
 | `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides every write (draft tools and read flags) and asks Microsoft for `Mail.Read`. |
 | `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.     |
 | `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one. |
