@@ -20,6 +20,7 @@ import {
 import {
   createGraph,
   defaultPageSize,
+  maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
 } from "./core/graph.ts";
@@ -121,7 +122,9 @@ export async function main(
         ms: started?.() ?? 0,
       });
     });
-  const emails = program.command("emails").description("List or search email");
+  const emails = program
+    .command("emails")
+    .description("List, read, search and flag email");
 
   program
     .command("serve")
@@ -164,7 +167,7 @@ export async function main(
         process.stderr.write(`Outlook MCP serving on ${listener.url}\n`);
         if (config.readonly)
           process.stderr.write(
-            `Read-only mode: draft tools are not offered (${scopesFor(true).join(", ")}).\n`,
+            `Read-only mode: no mailbox write is offered (${scopesFor(true).join(", ")}).\n`,
           );
         process.stderr.write(
           "Nothing on that port authenticates: keep it on loopback, or name every " +
@@ -310,6 +313,36 @@ export async function main(
       log.info("mailbox searched", { items: items.length });
       console.log(JSON.stringify(items, null, 2));
     });
+
+  /**
+   * `emails read` and `emails unread` are the CLI half of the two flag tools and
+   * share everything but the flag: ids in from the command line, what Graph now
+   * says about each one out to stdout, counts to the log. The cap is the tool's
+   * own — a hundred PATCHes asked for on a keyboard is as much a mistake as a
+   * hundred asked for by an agent, and one that is easier to make.
+   */
+  function flagCommand(read: boolean) {
+    emails
+      .command(`${read ? "read" : "unread"} <id...>`)
+      .description(
+        `Mark one or more emails as ${read ? "read" : "unread"} and print what Graph now says each id carries`,
+      )
+      .action(async (ids: string[]) => {
+        if (ids.length > maxFlaggedMessages)
+          throw new Error(
+            `At most ${maxFlaggedMessages} ids per command, not ${ids.length}.`,
+          );
+        const outcome = await graph.setMessageRead(ids, read);
+        // stdout stays the JSON a person pipes on; this is the same fact in a line.
+        log.info(`emails marked ${read ? "read" : "unread"}`, {
+          updated: outcome.updated.length,
+          failed: outcome.failed.length,
+        });
+        console.log(JSON.stringify(outcome, null, 2));
+      });
+  }
+  flagCommand(true);
+  flagCommand(false);
 
   // A failure is reported once, by the entry point that turns it into a message
   // and an exit code, with the command named there: reporting it here too would

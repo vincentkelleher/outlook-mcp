@@ -28,7 +28,8 @@ requests from non-local origins. Unknown paths return 404.
 
 **HTTP clients are not authenticated.** These guards are not authorization:
 local processes and allowed localhost browser origins can use the cached mailbox
-session, including the draft tools unless read-only mode is enabled. Only run it
+session, including its writes — flagging mail and drafts — unless read-only mode
+is enabled. Only run it
 on a trusted single-user machine. Do not expose it via proxies, tunnels or port
 forwarding; remote hosting needs verified client authentication and TLS first.
 Each session gets its own MCP server instance — at most 32 open at a time, and
@@ -40,14 +41,15 @@ SIGINT/SIGTERM close the sessions and the listener.
 
 Requested at sign-in (`src/core/config.ts`, `scopesFor`):
 
-| Scope              | Why                                             |
-| ------------------ | ----------------------------------------------- |
-| `User.Read`        | Identifying the signed-in account               |
-| `Mail.ReadWrite`   | Reading mail **and** creating or editing drafts |
-| `email`, `profile` | Standard OpenID scopes                          |
+| Scope              | Why                                                 |
+| ------------------ | --------------------------------------------------- |
+| `User.Read`        | Identifying the signed-in account                   |
+| `Mail.ReadWrite`   | Reading mail **and** editing it: drafts, read flags |
+| `email`, `profile` | Standard OpenID scopes                              |
 
-With `OUTLOOK_MCP_READONLY=1` the second becomes `Mail.Read` and no draft tool is
-advertised at all, so the permissions and the tool surface cannot disagree.
+With `OUTLOOK_MCP_READONLY=1` the second becomes `Mail.Read` and no mailbox write
+is advertised at all — neither `mark_read`/`mark_unread` nor a draft tool — so the
+permissions and the tool surface cannot disagree.
 
 **`Mail.Send` is never requested, and never will be by this design.** Creating a
 draft is a write to your mailbox, not a transmission. See below.
@@ -65,14 +67,17 @@ No tool, code path, or flag can transmit mail:
   that the scan itself distinguishes Graph's `createReply`/`createForward` draft
   actions from the sending ones.
 
-The write surface is exactly six draft operations plus one attachment upload:
+The write surface is six draft operations plus one attachment upload —
 `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`,
-`delete_draft`, `add_attachment`, and `list_drafts` to read them. Guardrails
-around it:
+`delete_draft`, `add_attachment`, with `list_drafts` to read them — and two flag
+operations, `mark_read` and `mark_unread`, which send one `PATCH` of `isRead` per
+id and touch no message content. Guardrails around it:
 
 - Every draft tool is annotated `readOnlyHint: false`, `idempotentHint: false`,
   so conforming clients ask the human first. `logout` and `delete_draft` are
-  marked `destructiveHint: true`.
+  marked `destructiveHint: true`. The flag tools are `readOnlyHint: false` too,
+  with `idempotentHint: true`: flagging a message that is already read changes
+  nothing, which is what makes a retry safe.
 - **Recipients are never inferred.** Tools accept explicit addresses and no tool
   reads the mailbox to guess one.
 - **Draft readback.** Every write returns what Microsoft actually stored —

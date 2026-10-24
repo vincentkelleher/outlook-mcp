@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { draftToolNames, readToolNames } from "../src/tools.ts";
+import { draftToolNames, flagToolNames, readToolNames } from "../src/tools.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const binArgs = (process.env.OUTLOOK_E2E_BIN ?? "src/index.ts").split(" ");
@@ -136,7 +136,7 @@ test("no arguments serves MCP over stdio with only newline-delimited JSON on std
   const listed = await server.request(2, "tools/list");
   assert.deepEqual(
     listed.result?.tools?.map((tool) => tool.name).sort(),
-    [...readToolNames, ...draftToolNames].sort(),
+    [...readToolNames, ...flagToolNames, ...draftToolNames].sort(),
   );
 
   const status = await server.request(3, "tools/call", {
@@ -213,7 +213,7 @@ test("read-only mode serves only the read tools and says so on stderr", async (t
 
   assert.match(
     server.stderrText(),
-    /Outlook MCP serving read-only \(User\.Read, Mail\.Read, email, profile\); draft tools disabled/,
+    /Outlook MCP serving read-only \(User\.Read, Mail\.Read, email, profile\); mailbox writes disabled/,
   );
   // The line went to stderr, so stdout is still nothing but frames.
   assert.deepEqual(server.notJson, [], "stdout carries only JSON");
@@ -235,7 +235,7 @@ test("explicit serve still serves MCP over stdio", async (t) => {
   const listed = await server.request(2, "tools/list");
   assert.deepEqual(
     listed.result?.tools?.map((tool) => tool.name).sort(),
-    [...readToolNames, ...draftToolNames].sort(),
+    [...readToolNames, ...flagToolNames, ...draftToolNames].sort(),
   );
   assert.deepEqual(server.notJson, []);
 });

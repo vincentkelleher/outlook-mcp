@@ -4,10 +4,13 @@ import {
   createGraph,
   defaultPageSize,
   maxAttachmentBytes,
+  maxFlagReasonChars,
   maxPageSize,
   messagesPath,
 } from "../src/core/graph.ts";
 import type { GraphClient, GraphRequest } from "../src/core/graph.ts";
+import { AuthRequiredError, noSessionMessage } from "../src/core/errors.ts";
+import { GraphError } from "@microsoft/microsoft-graph-client";
 import { captureLogs } from "./support/log-capture.ts";
 
 const messageFields =
@@ -388,6 +391,122 @@ test("delete_draft deletes that one message", async () => {
 
   assert.equal(requests[0].path, "/me/messages/a%2Fb");
   assert.equal(requests[0].verb, "delete");
+});
+
+test("marking read patches isRead on each message named, once each", async () => {
+  const { graph, requests } = graphFor();
+
+  const outcome = await graph.setMessageRead(["a/b", "c", "a/b"], true);
+
+  assert.deepEqual(
+    requests.map((request) => [request.path, request.verb, request.body]),
+    [
+      ["/me/messages/a%2Fb", "patch", { isRead: true }],
+      ["/me/messages/c", "patch", { isRead: true }],
+    ],
+    "a repeated id costs one request, and nothing but the flag is sent",
+  );
+  // The fake answers without an isRead, so the flag that was asked for is the
+  // honest report: Graph's word when it gives one, the request otherwise.
+  assert.deepEqual(outcome, {
+    updated: [
+      { id: "a/b", isRead: true },
+      { id: "c", isRead: true },
+    ],
+    failed: [],
+  });
+});
+
+test("the flag reported back is the one Graph returned, not the one asked for", async () => {
+  const { graph } = graphFor(() => ({ id: "m", isRead: false }));
+
+  const outcome = await graph.setMessageRead(["m"], true);
+
+  assert.deepEqual(outcome.updated, [{ id: "m", isRead: false }]);
+});
+
+test("one message Graph refuses is reported beside the ones that moved", async () => {
+  const long = "Resource not found. ".repeat(60);
+  const { graph, requests } = graphFor((path) => {
+    if (path.endsWith("/gone")) throw new Error(`\n ${long}`);
+    return { id: "m", isRead: true };
+  });
+
+  const outcome = await graph.setMessageRead(["here", "gone"], true);
+
+  // The refusal is one id's, so the request that succeeded is not undone and the
+  // caller is not told to redo the whole batch.
+  assert.equal(requests.length, 2);
+  assert.deepEqual(outcome.updated, [{ id: "here", isRead: true }]);
+  assert.deepEqual(
+    outcome.failed.map(({ id }) => id),
+    ["gone"],
+  );
+  // A Graph error is a JSON blob over several lines; a result carries one line of
+  // it, however long the blob was.
+  const [reason] = outcome.failed.map(({ reason }) => reason);
+  assert.equal(reason?.includes("\n"), false);
+  assert.equal(
+    reason?.length,
+    maxFlagReasonChars + 1,
+    "capped, with the ellipsis saying where it was cut",
+  );
+});
+
+/**
+ * The shape the Graph SDK really throws: its error handler rebuilds every
+ * rejection as a `GraphError`, keeping the message and filling `code` from
+ * `error.name`, and losing the class. A fake that threw `AuthRequiredError`
+ * straight would prove nothing about that rewrite, so this is built the way
+ * `GraphErrorHandler.constructError` builds it.
+ */
+function asSdkThrew(cause: Error): unknown {
+  const rewritten = new GraphError(-1, "", cause) as GraphError & {
+    code: string | null;
+  };
+  rewritten.code = cause.name;
+  return rewritten;
+}
+
+test("a sign-in failure survives the SDK rewriting it, and only that one does", async () => {
+  const { graph } = graphFor((path) => {
+    if (path.endsWith("/signed-out"))
+      throw asSdkThrew(new AuthRequiredError(noSessionMessage));
+    throw asSdkThrew(new Error("Item not found."));
+  });
+
+  await assert.rejects(
+    () => graph.getMessage("signed-out"),
+    (error: unknown) =>
+      error instanceof AuthRequiredError && error.message === noSessionMessage,
+    "the sign-in failure reaches the caller as a sign-in failure",
+  );
+  // Every other refusal keeps the shape Graph gave it: unwrapping the one class
+  // the caller acts on must not quietly relabel a missing message.
+  await assert.rejects(
+    () => graph.getMessage("missing"),
+    (error: unknown) =>
+      error instanceof AuthRequiredError === false &&
+      String(error).includes("Item not found."),
+  );
+});
+
+test("a missing session fails a flag batch once, not once per id", async () => {
+  const { graph } = graphFor((path) => {
+    // The SDK's rewritten form, because that is what a real request rejects with
+    // and the batch has to recognise it after `traced` hands it back.
+    if (path.endsWith("/b"))
+      throw asSdkThrew(new AuthRequiredError(noSessionMessage));
+    return { id: "m", isRead: true };
+  });
+
+  // Every id fails for the same reason and the remediation is one sign-in, so it
+  // is raised as it came rather than listed a hundred times as data.
+  await assert.rejects(
+    () => graph.setMessageRead(["a", "b"], false),
+    (error: unknown) =>
+      error instanceof AuthRequiredError && error.message === noSessionMessage,
+  );
 });
 
 test("add_attachment posts a file attachment to the draft", async () => {

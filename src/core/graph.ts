@@ -1,4 +1,5 @@
 import { Client } from "@microsoft/microsoft-graph-client";
+import { AuthRequiredError, noSessionMessage } from "./errors.ts";
 import { errorFields, logger, stopwatch } from "./log.ts";
 
 const log = logger("graph");
@@ -67,6 +68,25 @@ type AttachmentUpload = {
 export const defaultPageSize = 10;
 export const maxPageSize = 100;
 export const maxSearchPageSize = 1000;
+
+/**
+ * How many messages one `mark_read` / `mark_unread` call may name. Graph flags
+ * a message one at a time, so this is a ceiling on the requests a single tool
+ * call is allowed to make, not a limit Graph imposes — which is why it is the
+ * same size as a page of mail and not the larger one a search gets away with.
+ */
+export const maxFlaggedMessages = 100;
+
+/** A Graph error says the same thing in four lines; a result needs the first. */
+export const maxFlagReasonChars = 300;
+
+/** What one flag call ended up changing, id by id. */
+export type MessageFlags = {
+  /** What Graph says each changed message now carries. */
+  updated: { id: string; isRead: boolean }[];
+  /** Ids Graph refused, each with its own reason: one refusal is not all of them. */
+  failed: { id: string; reason: string }[];
+};
 
 /**
  * Graph accepts an attachment in one request only while it stays under 3 MB;
@@ -147,6 +167,40 @@ function pathForLogging(path: string): string {
   }
 }
 
+/** Graph's words for one refusal, on one line and short enough to return. */
+function reasonOfGraphError(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, " ")
+    .trim();
+  return message.length > maxFlagReasonChars
+    ? `${message.slice(0, maxFlagReasonChars)}…`
+    : message;
+}
+
+/**
+ * Hand back the sign-in failure as it left this project.
+ *
+ * The SDK rebuilds every rejection as its own `GraphError`: the message carries
+ * over and `code` is filled from `error.name`, but the class is gone — and the
+ * class is the one thing callers test. `error instanceof AuthRequiredError` is
+ * what turns a failed call into "sign in, then retry" at the tool boundary, what
+ * keeps it a `warn` rather than an `error` in the log, and what makes a flag
+ * batch fail once instead of reporting the same refusal per id. Left wrapped, a
+ * read of a mailbox with no session reads back as an ordinary server fault with
+ * the right sentence in it, and the agent gets no route to `login`.
+ */
+function unwrapAuthError(error: unknown): unknown {
+  if (error instanceof AuthRequiredError) return error;
+  const wrapped = (error ?? {}) as { code?: unknown; message?: unknown };
+  if (wrapped.code !== "AuthRequiredError") return error;
+  return new AuthRequiredError(
+    typeof wrapped.message === "string" && wrapped.message !== ""
+      ? wrapped.message
+      : noSessionMessage,
+    { cause: error },
+  );
+}
+
 type BuilderMethod = (...args: unknown[]) => unknown;
 
 /**
@@ -160,7 +214,10 @@ type BuilderMethod = (...args: unknown[]) => unknown;
  * `debug` is which HTTP call that failure was.
  *
  * A builder method that returns the builder is part of the chain and keeps the
- * wrapper; anything else is the terminal call, whose promise is timed.
+ * wrapper; anything else is the terminal call, whose promise is timed. The
+ * rejection also passes through `unwrapAuthError`, because this is the one place
+ * every request goes through and the SDK's rewrite is the one thing a caller
+ * cannot see for itself.
  */
 function traced(request: GraphRequest, path: string): GraphRequest {
   const wrapper: GraphRequest = new Proxy(request, {
@@ -191,7 +248,7 @@ function traced(request: GraphRequest, path: string): GraphRequest {
               ms: stop(),
               ...errorFields(error, log.detailed),
             });
-            throw error;
+            throw unwrapAuthError(error);
           },
         );
       };
@@ -418,6 +475,60 @@ export function createGraph(deps: GraphDeps) {
     return client.api(messagePath(messageId)).delete();
   }
 
+  /**
+   * Flip the read flag on one or more messages with a PATCH of `isRead`, which
+   * is the only way Graph does it: there is no collection endpoint, so a batch
+   * is fanned out here and every id answers for itself. A message Graph will
+   * not touch — already deleted, or never in this mailbox — is reported beside
+   * the ones that moved rather than unwinding the call, because flagging is
+   * per message and an agent that named ninety-nine good ids and one stale one
+   * should not have the ninety-nine redone.
+   *
+   * A missing session is the exception. Every id fails for that one reason, and
+   * the remediation is a sign-in rather than a page of identical refusals, so
+   * it is raised as it came from the token provider.
+   */
+  async function setMessageRead(
+    ids: string[],
+    read: boolean,
+  ): Promise<MessageFlags> {
+    const named = [...new Set(ids)];
+    const settled = await Promise.allSettled(
+      named.map((id) => {
+        return client
+          .api(messagePath(id))
+          .patch<{ id?: string; isRead?: boolean }>({
+            isRead: read,
+          });
+      }),
+    );
+    const signedOut = settled.find(
+      (outcome) =>
+        outcome.status === "rejected" &&
+        outcome.reason instanceof AuthRequiredError,
+    );
+    if (signedOut?.status === "rejected") throw signedOut.reason;
+    const updated: MessageFlags["updated"] = [];
+    const failed: MessageFlags["failed"] = [];
+    settled.forEach((outcome, index) => {
+      const id = named[index];
+      if (outcome.status === "fulfilled") {
+        // Read back what Graph stored. Where it said nothing, the flag it was
+        // given is the honest answer.
+        updated.push({
+          id,
+          isRead:
+            typeof outcome.value?.isRead === "boolean"
+              ? outcome.value.isRead
+              : read,
+        });
+        return;
+      }
+      failed.push({ id, reason: reasonOfGraphError(outcome.reason) });
+    });
+    return { updated, failed };
+  }
+
   /** The decoded size is checked here, so an over-limit file costs no request. */
   function addAttachment(messageId: string, attachment: AttachmentUpload) {
     const bytes = Buffer.from(attachment.contentBase64, "base64").byteLength;
@@ -446,6 +557,7 @@ export function createGraph(deps: GraphDeps) {
     updateDraft,
     listDrafts,
     deleteDraft,
+    setMessageRead,
     addAttachment,
   };
 }

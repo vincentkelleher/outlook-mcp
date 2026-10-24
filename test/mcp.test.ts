@@ -15,6 +15,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { createServer } from "../src/mcp.ts";
 import {
   draftToolNames,
+  flagToolNames,
   maxEchoedBodyChars,
   maxInlineBytes,
   readToolNames,
@@ -27,6 +28,7 @@ import { AuthRequiredError, noSessionMessage } from "../src/core/errors.ts";
 import type { Graph, Page } from "../src/core/graph.ts";
 import {
   defaultPageSize,
+  maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
 } from "../src/core/graph.ts";
@@ -73,6 +75,7 @@ type Calls = {
   draftPages: unknown[];
   deleted: string[];
   uploaded: [string, unknown][];
+  flags: [string[], boolean][];
   loginStarts: number;
   logouts: string[];
 };
@@ -126,6 +129,7 @@ function fakeDeps(
     draftPages: [],
     deleted: [],
     uploaded: [],
+    flags: [],
     loginStarts: 0,
     logouts: [],
   };
@@ -255,6 +259,20 @@ function fakeDeps(
       calls.uploaded.push([messageId, attachment]);
       return { ...storedDraft, id: messageId };
     },
+    async setMessageRead(ids, read) {
+      guard();
+      calls.flags.push([ids, read]);
+      // `gone` stands for an id Graph refuses while the others go through, which
+      // is the only way a partial batch can be asserted at this layer.
+      return {
+        updated: ids
+          .filter((id) => id !== "gone")
+          .map((id) => ({ id, isRead: read })),
+        failed: ids.includes("gone")
+          ? [{ id: "gone", reason: "Resource not found." }]
+          : [],
+      };
+    },
   };
   const deps: ToolDeps = {
     graph,
@@ -342,12 +360,12 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
   const client = await connect(t, deps);
   const listed = await client.listTools();
 
-  // The full surface is the registry's own two halves: the read and sign-in
-  // tools plus the draft tools this mode exposes. The read-only half of the same
-  // pair is pinned in test/no-send.test.ts.
+  // The full surface is the registry's own halves: the read and sign-in tools,
+  // the flag tools and the draft tools this mode exposes. The read-only half of
+  // the same split is pinned in test/no-send.test.ts.
   assert.deepEqual(
     listed.tools.map((tool) => tool.name).sort(),
-    [...readToolNames, ...draftToolNames].sort(),
+    [...readToolNames, ...flagToolNames, ...draftToolNames].sort(),
   );
   assert.equal(
     listed.tools.find((tool) => tool.name === "list_emails")?.title,
@@ -394,6 +412,23 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
     destructiveHint: true,
   });
 
+  // The flag tools write, so they do not advertise themselves as reads — but
+  // they are the writes a client may retry: a message already read stays read.
+  for (const name of flagToolNames) {
+    assert.deepEqual(
+      listed.tools.find((tool) => tool.name === name)?.annotations,
+      { ...writeAnnotations, idempotentHint: true },
+      `${name} annotations`,
+    );
+    assert.equal(
+      listed.tools
+        .find((tool) => tool.name === name)
+        ?.description?.includes(String(maxFlaggedMessages)),
+      true,
+      `${name} states its own cap`,
+    );
+  }
+
   // The advertised bounds and the enforced bounds are the same schema, so a
   // client reading tools/list cannot be told something the server disagrees with.
   const bounds = (name: string) => {
@@ -418,6 +453,29 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
     minimum: 1,
     maximum: maxSearchPageSize,
   });
+
+  // A batch of ids is bounded the same way a page is: advertised, described and
+  // enforced by one number.
+  const flagBounds = (name: string) => {
+    const schema = listed.tools.find((tool) => tool.name === name)
+      ?.inputSchema as
+      | {
+          required?: string[];
+          properties?: { ids?: { minItems?: number; maxItems?: number } };
+        }
+      | undefined;
+    return {
+      required: schema?.required,
+      minItems: schema?.properties?.ids?.minItems,
+      maxItems: schema?.properties?.ids?.maxItems,
+    };
+  };
+  for (const name of flagToolNames)
+    assert.deepEqual(
+      flagBounds(name),
+      { required: ["ids"], minItems: 1, maxItems: maxFlaggedMessages },
+      `${name} bounds`,
+    );
 
   // The page sizes are one number in one place, so the sentence an agent reads
   // cannot promise a bound the schema then refuses.
@@ -818,6 +876,86 @@ test("delete_draft removes one draft and reports it", async (t) => {
     messageId: "draft-1",
     note: "The draft is gone from the mailbox. Nothing was sent.",
   });
+});
+
+test("mark_read and mark_unread flag exactly the ids they are given", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const read = await call(client, "mark_read", { ids: ["message-1"] });
+  const unread = await call(client, "mark_unread", {
+    ids: ["message-1", "message-2"],
+  });
+
+  assert.equal(read.isError, undefined);
+  assert.deepEqual(calls.flags, [
+    [["message-1"], true],
+    [["message-1", "message-2"], false],
+  ]);
+  // Nothing is invented on the way back: what Graph says each message carries is
+  // the answer, and a batch that failed nowhere says so with an empty list
+  // rather than an absent key.
+  assert.deepEqual(JSON.parse(textOf(read)), {
+    read: true,
+    updated: [{ id: "message-1", isRead: true }],
+    failed: [],
+  });
+  assert.deepEqual(JSON.parse(textOf(unread)).updated, [
+    { id: "message-1", isRead: false },
+    { id: "message-2", isRead: false },
+  ]);
+});
+
+test("a flag batch Graph partly refuses names the ids that did not change", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const result = await call(client, "mark_read", {
+    ids: ["message-1", "gone"],
+  });
+
+  // One stale id is not a failed call: the message Graph accepted stayed
+  // accepted, and the result says so instead of asking for the batch again.
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(calls.flags, [[["message-1", "gone"], true]]);
+  const payload = JSON.parse(textOf(result));
+  assert.deepEqual(payload.updated, [{ id: "message-1", isRead: true }]);
+  assert.deepEqual(payload.failed, [
+    { id: "gone", reason: "Resource not found." },
+  ]);
+  assert.match(payload.note, /1 of 2 messages now carry read=true/);
+});
+
+test("an empty batch or one over the cap never reaches Graph", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const tooFew = await call(client, "mark_read", { ids: [] });
+  const tooMany = await call(client, "mark_unread", {
+    ids: Array.from(
+      { length: maxFlaggedMessages + 1 },
+      (_unused, index) => `m${index}`,
+    ),
+  });
+
+  assert.equal(tooFew.isError, true);
+  assert.equal(tooMany.isError, true);
+  assert.match(textOf(tooMany), /Invalid arguments for tool mark_unread/);
+  assert.equal(calls.flags.length, 0);
+});
+
+test("without a session a flag call gives one login step, not one per id", async (t) => {
+  const client = await connect(
+    t,
+    fakeDeps(testConfig(t), { session: false }).deps,
+  );
+
+  const result = await call(client, "mark_read", {
+    ids: ["message-1", "message-2"],
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(textOf(result), /No Outlook session.*Call the login tool/s);
 });
 
 test("add_attachment uploads a file to the draft within the schema's bounds", async (t) => {

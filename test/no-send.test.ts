@@ -12,6 +12,7 @@ import { createGraph } from "../src/core/graph.ts";
 import { createServer } from "../src/mcp.ts";
 import {
   draftToolNames,
+  flagToolNames,
   readToolNames,
   tools,
   toolsFor,
@@ -117,16 +118,30 @@ const draftWriteToolNames = [
   "update_draft",
 ];
 
-test("the registry is the read tools plus seven draft tools, nothing else", () => {
+/**
+ * The other mailbox write: a message's read flag. Nothing here transmits, but a
+ * flag needs `Mail.ReadWrite`, so it belongs to the half read-only mode hides —
+ * and a flag tool moved into the read list would be a write advertised by a
+ * `Mail.Read` server, which is exactly what the assertions below catch.
+ */
+const flagWriteToolNames = ["mark_read", "mark_unread"];
+
+test("the registry is the read tools, two flag tools and seven draft tools, nothing else", () => {
   assert.deepEqual(
     [...draftToolNames].sort(),
     draftWriteToolNames,
-    "the write surface changed: read-only mode and every assertion below depends on this list",
+    "the draft surface changed: read-only mode and every assertion below depends on this list",
+  );
+  assert.deepEqual(
+    [...flagToolNames].sort(),
+    flagWriteToolNames,
+    "the flag surface changed: read-only mode and every assertion below depends on this list",
   );
   assert.equal(draftToolNames.length, 7);
+  assert.equal(flagToolNames.length, 2);
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    [...readToolNames, ...draftToolNames].sort(),
+    [...readToolNames, ...flagToolNames, ...draftToolNames].sort(),
   );
 });
 
@@ -204,30 +219,76 @@ test("the scan really distinguishes the create actions from the sending ones", (
   assert.match(graphSource, /\/createForward/);
 });
 
-test("the mutating Graph calls are exactly the six reviewed draft writes", () => {
+test("the mutating Graph calls are exactly the seven reviewed mailbox writes", () => {
   // A name regex cannot see a path assembled in pieces, so this closes the
   // gap from the other side: every request that changes the mailbox goes
-  // through one of six call sites in src/core/graph.ts. A new one is not
-  // automatically wrong, but it must be looked at, and this test is where
-  // that conversation starts.
+  // through one of seven call sites in src/core/graph.ts — six on a draft and
+  // one PATCH of `isRead`. A new one is not automatically wrong, but it must be
+  // looked at, and this test is where that conversation starts.
+  //
+  // A type argument on the call is matched, not skipped, because that is how a
+  // write hides from this count: `.patch<T>({ isRead: read })` was six calls for
+  // as long as the pattern asked for a parenthesis straight after the verb.
   const source = readFileSync(join(repo, "src/core/graph.ts"), "utf8");
-  const verbs = [...source.matchAll(/\.(post|put|patch|delete)\(/g)]
+  const verbs = [
+    ...source.matchAll(/\.(post|put|patch|delete)\s*(?:<[^()]*>)?\s*\(/g),
+  ]
     .map((match) => match[1])
     .sort();
   assert.deepEqual(
     verbs,
-    ["delete", "patch", "post", "post", "post", "post"],
-    "a new mutating Graph call appeared: a draft write may be fine, anything that transmits mail is not",
+    ["delete", "patch", "patch", "post", "post", "post", "post"],
+    "a new mutating Graph call appeared: a draft write or a read flag may be fine, anything that transmits mail is not",
   );
 });
 
-test("readonly mode advertises no draft tool at all", async (t) => {
+test("the read-flag write patches isRead on one message and nothing else", () => {
+  // `patch` is the verb that could rewrite a message, so the flag write is
+  // pinned to the one property it is allowed to send, on a path built from the
+  // id the caller named.
+  const source = readFileSync(join(repo, "src/core/graph.ts"), "utf8");
+  const start = source.indexOf("async function setMessageRead");
+  const flagWrite = source.slice(
+    start,
+    start === -1
+      ? undefined
+      : source.indexOf("return { updated, failed }", start),
+  );
+  assert.ok(
+    flagWrite.length > 0,
+    "setMessageRead is the flag write this test reads",
+  );
+  assert.match(flagWrite, /\.api\(messagePath\(id\)\)/);
+  assert.match(flagWrite, /\.patch[\s\S]{0,80}isRead: read/);
+  for (const content of [
+    "draftRequestBody",
+    "subject",
+    "Recipients",
+    ".post(",
+    ".delete(",
+  ]) {
+    assert.equal(
+      flagWrite.includes(content),
+      false,
+      `the flag write touches ${content}, so it writes more than a flag`,
+    );
+  }
+});
+
+test("readonly mode advertises no mailbox write at all", async (t) => {
   const config = testConfig(t, { OUTLOOK_MCP_READONLY: "1" });
   const { client, names } = await advertised(t, config);
 
-  // Pinned against the read half of the registry: a draft tool left in this mode
-  // cannot match it, so there is nothing to re-check name by name.
+  // Pinned against the read half of the registry: a draft tool or a flag tool
+  // left in this mode cannot match it, so there is nothing to re-check name by
+  // name. Both are named anyway, because the two groups can move independently.
   assert.deepEqual(names, [...readToolNames].sort());
+  for (const write of [...draftToolNames, ...flagToolNames])
+    assert.equal(
+      names.includes(write),
+      false,
+      `${write} is advertised where the token is only Mail.Read`,
+    );
 
   // What is left is read-only mail plus sign-in, which touches the local cache
   // and not the mailbox; without it a read-only server could not sign in.
@@ -272,11 +333,12 @@ test("the advertised tools and the advertised permissions are one decision", asy
     assert.equal(reported.readonly, readonly);
     assert.deepEqual(reported.scopes, scopesFor(readonly));
     assert.equal(reported.scopes?.includes("Mail.ReadWrite"), !readonly);
-    assert.equal(
-      names.some((name) => draftToolNames.includes(name)),
-      !readonly,
-      `draft tools with readonly=${readonly}`,
-    );
+    for (const write of [...draftToolNames, ...flagToolNames])
+      assert.equal(
+        names.includes(write),
+        !readonly,
+        `${write} with readonly=${readonly}`,
+      );
   }
 });
 
@@ -310,7 +372,10 @@ test("without readonly the seven draft tools are advertised with their limits", 
   const config = testConfig(t);
   const { client, names } = await advertised(t, config);
 
-  assert.deepEqual(names, [...readToolNames, ...draftToolNames].sort());
+  assert.deepEqual(
+    names,
+    [...readToolNames, ...flagToolNames, ...draftToolNames].sort(),
+  );
   assert.match(
     client.getInstructions() ?? "",
     /create_draft, create_reply_draft, create_forward_draft, update_draft, list_drafts, delete_draft and add_attachment/,

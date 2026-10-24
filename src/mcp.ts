@@ -32,7 +32,12 @@ import {
   stopwatch,
 } from "./core/log.ts";
 import type { Logger } from "./core/log.ts";
-import { draftToolNames, readToolNames, toolsFor } from "./tools.ts";
+import {
+  draftToolNames,
+  flagToolNames,
+  readToolNames,
+  toolsFor,
+} from "./tools.ts";
 import type { ToolDeps } from "./tools.ts";
 
 const serverName = "outlook";
@@ -67,8 +72,8 @@ function instructionsFor(readonly: boolean): string {
   return [
     `Outlook mail over Microsoft Graph: read and search mail, download attachments, and check or start a session with ${proseOf(readToolNames)}.`,
     readonly
-      ? `This server runs in readonly mode: it asks Microsoft for the Mail.Read scope only and exposes none of ${proseOf(draftToolNames)}.`
-      : `The draft tools - ${proseOf(draftToolNames)} - write a message that has not been sent, and every result reads back what was stored so a person can audit it.`,
+      ? `This server runs in readonly mode: it asks Microsoft for the Mail.Read scope only and exposes none of ${proseOf([...flagToolNames, ...draftToolNames])}.`
+      : `The mailbox writes are two kinds. ${proseOf(flagToolNames)} move only a message's read flag. ${proseOf(draftToolNames)} write a message that has not been sent. Every result reads back what was stored so a person can audit it.`,
     "Nothing on this server can send, reply or forward mail, and no tool infers a recipient; the user is the one who sends.",
     "Results are compact JSON, one text block, with the same payload in structuredContent. List results carry nextCursor - pass it back as cursor for the next page. Full bodies only come from get_email.",
     "When auth_status reports signedIn false, its reason says what to do: needsConsent or expired means call login, since only a fresh consent flow widens or renews a grant; unavailable means the session could not be checked at all, so retry later and do not start a sign-in or ask the user to approve a code. For a real flow, show the user the verification URL and code login returns, poll auth_status until signedIn is true, then retry.",
@@ -326,10 +331,10 @@ export async function serve(deps: ToolDeps): Promise<void> {
     format: deps.config.logFormat,
   });
   // stderr only: stdout is JSON-RPC. Someone starting this in read-only mode
-  // should see why the draft tools are not there.
+  // should see why no write tool is there.
   if (deps.config.readonly)
     process.stderr.write(
-      `Outlook MCP serving read-only (${scopesFor(true).join(", ")}); draft tools disabled\n`,
+      `Outlook MCP serving read-only (${scopesFor(true).join(", ")}); mailbox writes disabled\n`,
     );
   log.info("serving MCP over stdio", {
     version: packageVersion(),

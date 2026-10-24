@@ -5,6 +5,7 @@ import type { CliDeps } from "../src/cli.ts";
 import type { Graph } from "../src/core/graph.ts";
 import {
   defaultPageSize,
+  maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
 } from "../src/core/graph.ts";
@@ -14,10 +15,17 @@ type Calls = {
   search: unknown[];
   get: string[];
   attachments: string[];
+  flags: [string[], boolean][];
 };
 
 function fakeGraph(): { graph: Graph; calls: Calls } {
-  const calls: Calls = { list: [], search: [], get: [], attachments: [] };
+  const calls: Calls = {
+    list: [],
+    search: [],
+    get: [],
+    attachments: [],
+    flags: [],
+  };
   const graph: Graph = {
     async listMessages(options = {}) {
       calls.list.push(options);
@@ -63,6 +71,14 @@ function fakeGraph(): { graph: Graph; calls: Calls } {
     },
     async addAttachment() {
       throw new Error("the CLI must not upload attachments");
+    },
+    // Flagging is the one write the CLI does have, alongside the draft tools.
+    async setMessageRead(ids, read) {
+      calls.flags.push([ids, read]);
+      return {
+        updated: ids.map((id) => ({ id, isRead: read })),
+        failed: [],
+      };
     },
   };
   return { graph, calls };
@@ -136,6 +152,49 @@ test("get and attachments pass ids straight through", async () => {
   assert.deepEqual(JSON.parse(attached.stdout), [{ id: "attachment" }]);
   assert.deepEqual(calls.get, ["a/b"]);
   assert.deepEqual(calls.attachments, ["m1"]);
+});
+
+test("read and unread flag the ids given, and a batch over the cap costs nothing", async () => {
+  const { graph, calls } = fakeGraph();
+
+  const read = await runCli(["emails", "read", "a/b", "c"], { graph });
+  const unread = await runCli(["emails", "unread", "a/b"], { graph });
+
+  assert.equal(read.failure, undefined);
+  assert.equal(unread.failure, undefined);
+  assert.deepEqual(JSON.parse(read.stdout), {
+    updated: [
+      { id: "a/b", isRead: true },
+      { id: "c", isRead: true },
+    ],
+    failed: [],
+  });
+  assert.deepEqual(calls.flags, [
+    [["a/b", "c"], true],
+    [["a/b"], false],
+  ]);
+
+  // The cap is the tool's own, and the CLI holds it too: a shell expansion that
+  // sweeps in two hundred ids asks for two hundred PATCHes unless something here
+  // says no, and it says no before it asks for anything.
+  const tooMany = await runCli(
+    [
+      "emails",
+      "read",
+      ...Array.from(
+        { length: maxFlaggedMessages + 1 },
+        (_unused, index) => `m${index}`,
+      ),
+    ],
+    { graph },
+  );
+  assert.match(
+    message(tooMany.failure),
+    new RegExp(
+      `At most ${maxFlaggedMessages} ids per command, not ${maxFlaggedMessages + 1}`,
+    ),
+  );
+  assert.equal(calls.flags.length, 2);
 });
 
 test("login --background reports an existing session instead of starting a second one", async () => {

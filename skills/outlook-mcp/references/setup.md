@@ -35,20 +35,20 @@ and the error comes from Microsoft, not from here.
 **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated
 permissions**, then add:
 
-| Permission        | Why                                                    |
-| ----------------- | ------------------------------------------------------ |
-| `Mail.ReadWrite`  | Reading the mailbox and writing drafts                 |
-| `Mail.Read`       | The same reading, with no draft tool. One or the other |
-| `User.Read`       | Finding out who is signed in                           |
-| `email`,`profile` | The OpenID scopes the sign-in already asks for         |
+| Permission        | Why                                                      |
+| ----------------- | -------------------------------------------------------- |
+| `Mail.ReadWrite`  | Reading the mailbox, writing drafts, setting read flags  |
+| `Mail.Read`       | The same reading, with no write at all. One or the other |
+| `User.Read`       | Finding out who is signed in                             |
+| `email`,`profile` | The OpenID scopes the sign-in already asks for           |
 
 Ask for `Mail.Read` **or** `Mail.ReadWrite`, not both:
 
-- A server that may draft (`Mail.ReadWrite`) writes drafts, replies and
-  forwards. It can still not send: the app needs `Mail.Send` for that and this
-  project never asks for it.
+- A server that may write (`Mail.ReadWrite`) writes drafts, replies and
+  forwards, and marks messages read or unread. It can still not send: the app
+  needs `Mail.Send` for that and this project never asks for it.
 - A server run with `OUTLOOK_MCP_READONLY=1` asks Microsoft for `Mail.Read` and
-  exposes no draft tool at all, so `Mail.ReadWrite` is unnecessary there.
+  exposes no write at all, so `Mail.ReadWrite` is unnecessary there.
 
 Granting `Mail.ReadWrite` is not consent. Delegated permissions are consented
 by the signed-in user at first sign-in; in a work or school tenant where the
@@ -105,9 +105,9 @@ host's loopback and the flow is unchanged: sign in once, poll `auth_status`.
 
 A registration made before drafts existed will carry `Mail.Read`. Add
 `Mail.ReadWrite` to it and sign in again: the token then carries the wider
-scope, and the draft tools appear. Removing `Mail.ReadWrite` from the app while
-running without `OUTLOOK_MCP_READONLY` makes every draft call fail with a
-Microsoft consent error rather than a local one.
+scope, and the write tools appear. Removing `Mail.ReadWrite` from the app while
+running without `OUTLOOK_MCP_READONLY` makes every draft and flag call fail with
+a Microsoft consent error rather than a local one.
 
 ## When something is wrong
 

@@ -149,8 +149,9 @@ in again.
 
 ## The tools
 
-Everything below is what `tools/list` advertises. The draft tools appear only
-when the server is not in read-only mode.
+Everything below is what `tools/list` advertises. The two writes — marking mail
+read or unread, and drafts — appear only when the server is not in read-only
+mode.
 
 | Tool                   | What it does                                                               |
 | ---------------------- | -------------------------------------------------------------------------- |
@@ -162,6 +163,8 @@ when the server is not in read-only mode.
 | `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error           |
 | `login`                | Starts sign-in and returns at once with the URL and code                   |
 | `logout`               | Deletes the saved session (marked destructive)                             |
+| `mark_read`            | Sets `isRead` on 1-100 message ids, each id reported back                  |
+| `mark_unread`          | Clears `isRead` on 1-100 message ids, the same shape                       |
 | `create_draft`         | A new unsent message, read back as stored                                  |
 | `create_reply_draft`   | An unsent reply that keeps the thread                                      |
 | `create_forward_draft` | An unsent forward, to the recipients you name                              |
@@ -177,8 +180,9 @@ it back as `cursor`. Resources are published too: `outlook://folders`,
 ### Nothing here can send mail
 
 There is no `/send`, no `/reply`, no `/forward`, and no `Mail.Send` scope. A
-draft is a message waiting in your Drafts folder for a person to read and send,
-and that is the whole write surface:
+draft is a message waiting in your Drafts folder for a person to read and send.
+The only other write is a message's read flag — one `PATCH` of `isRead`, which
+changes no content and transmits nothing:
 
 - The draft tools are annotated so clients ask before running them.
 - Recipients are only ever the addresses you pass. Nothing reads the mailbox to
@@ -186,7 +190,8 @@ and that is the whole write surface:
 - Every draft result reads back what Microsoft actually stored, so the human can
   audit it.
 - Tests assert the registry contains no send-capable tool and that no request
-  path ends in `/send`, `/reply` or `/forward`.
+  path ends in `/send`, `/reply` or `/forward`, and they pin every mutating
+  Graph call: six on a draft and one `PATCH` of `isRead`.
 
 If sending ever becomes a feature, it needs its own scope, its own confirmation,
 and its own conversation.
@@ -199,6 +204,8 @@ node dist/index.js emails list --unread --limit 25
 node dist/index.js emails search "from:hello@example.com" --limit 25
 node dist/index.js emails get "message-id"
 node dist/index.js emails attachments "message-id"
+node dist/index.js emails read "message-id" "another-id"
+node dist/index.js emails unread "message-id"
 node dist/index.js config --help
 ```
 
@@ -212,26 +219,28 @@ node dist/index.js emails list --limit 5 | jq '.[].subject'
 `list` returns up to 100 messages and `search` up to 1000, in Microsoft Graph
 message-search syntax including `from:`, `subject:` and `body:`. `emails
 attachments` is the one place that still prints base64 `contentBytes`, because
-that is what the CLI always did; the MCP tools never do.
+that is what the CLI always did; the MCP tools never do. `emails read` and
+`emails unread` take 1 to 100 ids and print what Graph says each one now
+carries, including the ids it refused.
 
 ## Configuration
 
-| Variable                           | Default                  | Purpose                                                                                          |
-| ---------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                          |
-| `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                        |
-| `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                     |
-| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                                 |
-| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                           |
-| `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides all draft tools and asks Microsoft for `Mail.Read` instead of `Mail.ReadWrite`. |
-| `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.        |
-| `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one.    |
-| `OUTLOOK_MCP_ALLOWED_HOSTS`        | unset                    | Extra `Host` names to serve, comma-separated, for a server reached by a name of your own.        |
-| `OUTLOOK_MCP_ALLOWED_ORIGINS`      | unset                    | Extra browser origins, comma-separated, beyond the same origin.                                  |
-| `OUTLOOK_MCP_SESSION_IDLE_MINUTES` | `1440`                   | `serve --http` only: how long an HTTP session with nothing connected survives.                   |
-| `OUTLOOK_MCP_IMAGE`                | the published GHCR image | Which image `config docker` names, if you mirror it elsewhere.                                   |
-| `OUTLOOK_LOG_LEVEL`                | `info`                   | `debug`, `info`, `warn`, `error` or `silent`. Every log line goes to stderr.                     |
-| `OUTLOOK_LOG_FORMAT`               | `text`                   | `text` for a terminal, `json` for a log collector.                                               |
+| Variable                           | Default                  | Purpose                                                                                       |
+| ---------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                       |
+| `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                     |
+| `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                  |
+| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                              |
+| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | The only directory `download_attachment` may write to.                                        |
+| `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides every write (draft tools and read flags) and asks Microsoft for `Mail.Read`. |
+| `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.     |
+| `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one. |
+| `OUTLOOK_MCP_ALLOWED_HOSTS`        | unset                    | Extra `Host` names to serve, comma-separated, for a server reached by a name of your own.     |
+| `OUTLOOK_MCP_ALLOWED_ORIGINS`      | unset                    | Extra browser origins, comma-separated, beyond the same origin.                               |
+| `OUTLOOK_MCP_SESSION_IDLE_MINUTES` | `1440`                   | `serve --http` only: how long an HTTP session with nothing connected survives.                |
+| `OUTLOOK_MCP_IMAGE`                | the published GHCR image | Which image `config docker` names, if you mirror it elsewhere.                                |
+| `OUTLOOK_LOG_LEVEL`                | `info`                   | `debug`, `info`, `warn`, `error` or `silent`. Every log line goes to stderr.                  |
+| `OUTLOOK_LOG_FORMAT`               | `text`                   | `text` for a terminal, `json` for a log collector.                                            |
 
 A `.env` in the working directory is read for you, and real environment
 variables win over it.

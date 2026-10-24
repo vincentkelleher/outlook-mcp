@@ -1,6 +1,6 @@
 ---
 name: outlook-mcp
-description: Read, search, and draft Outlook email through Microsoft Graph, with device-code sign-in cached on disk. Use when the user asks to find, inspect, summarise, or search messages in their Outlook mailbox, or to write a draft, reply draft, or forward draft. Cannot send mail: a person sends.
+description: Read, search, flag, and draft Outlook email through Microsoft Graph, with device-code sign-in cached on disk. Use when the user asks to find, inspect, summarise, or search messages in their Outlook mailbox, to mark them read or unread, or to write a draft, reply draft, or forward draft. Cannot send mail: a person sends.
 compatibility: Node 22 or newer; 22.18+ to run the TypeScript sources without building dist first. Needs OUTLOOK_OAUTH_CLIENT_ID.
 ---
 
@@ -42,11 +42,18 @@ repository's `docs/clients.md` is the matrix for every client.
 | `list_attachments` / `download_attachment`                                                                                    | Metadata first; a file lands in the server's attachment dir  |
 | `auth_status`                                                                                                                 | Session, authority, mode, scopes, last sign-in error         |
 | `login` / `logout`                                                                                                            | Start sign-in without waiting / delete the session           |
+| `mark_read` / `mark_unread`                                                                                                   | Flip the read flag on 1-100 ids, no content touched          |
 | `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment` | Write an unsent message                                      |
 
 List results carry `items` and `nextCursor`: pass `nextCursor` back as `cursor`
 for the next page. Bodies only ever come from `get_email`, and attachment
 content never comes back inline unless asked for.
+
+The flag tools take ids, not a query, and return every id with the flag Graph
+now says it carries — an id Graph refused sits in `failed` while the rest still
+change. Marking mail read is visible to the user: it moves messages out of their
+unread count, so say which ones you flagged, and use `mark_unread` to put one
+back.
 
 ## Without MCP, use the CLI
 
@@ -55,12 +62,14 @@ node dist/index.js emails list --unread --limit 25
 node dist/index.js emails search "from:ana subject:invoice" --limit 25
 node dist/index.js emails get "message-id"
 node dist/index.js emails attachments "message-id"
+node dist/index.js emails read "message-id" "another-id"
+node dist/index.js emails unread "message-id"
 node dist/index.js logout
 ```
 
 JSON goes to stdout, diagnostics to stderr. `list` caps at 100 messages,
-`search` at 1000. The CLI reads and signs in only: drafts are an MCP tool, and
-a human sends either way.
+`search` at 1000, `read` and `unread` at 100 ids. The CLI reads, flags and signs
+in: drafts are an MCP tool, and a human sends either way.
 
 When a command fails, run it once with `OUTLOOK_LOG_LEVEL=debug` and read the
 stderr it prints: one line per step — the sign-in check, the Graph call, its

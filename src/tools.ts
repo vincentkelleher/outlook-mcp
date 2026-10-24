@@ -23,6 +23,7 @@ import {
   createGraph,
   defaultPageSize,
   maxAttachmentBytes,
+  maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
   withoutUndefined,
@@ -98,6 +99,20 @@ const draftHints: ToolAnnotations = {
   readOnlyHint: false,
   destructiveHint: false,
   idempotentHint: false,
+  openWorldHint: true,
+};
+
+/**
+ * Marking mail read or unread is the other mailbox write this server has: small,
+ * reversible, and touching no content. It still needs `Mail.ReadWrite`, so it
+ * sits with the draft tools as something read-only mode does not advertise.
+ */
+const flagHints: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  // The second call to the same message changes nothing, which is exactly what
+  // makes it safe for a client to retry.
+  idempotentHint: true,
   openWorldHint: true,
 };
 
@@ -412,7 +427,7 @@ const coreTools: Tool[] = [
     name: "auth_status",
     title: "Sign-in status",
     description:
-      "Report the Outlook session: { signedIn, account, reason, authority, cachePath, readonly, scopes, lastLoginError, signInPending, verificationUri, userCode, expiresAt }. signedIn is true only when a token can actually be obtained for the scopes below, so an account cached under a narrower grant reports signedIn false with reason needsConsent, and an expired one reports reason expired - either way login starts a fresh sign-in. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when drafts are offered, Mail.Read in readonly mode, where no draft tool is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. While a sign-in flow is open signInPending is true and this carries the verificationUri and userCode to show the user, with expiresAt, so the code is found here even when another client started the flow. Safe to call repeatedly to poll after login, but not free: confirming a session can mean asking Microsoft for a token and rewriting the cache, so poll every few seconds rather than in a tight loop, and treat reason unavailable as a failed check to retry rather than a sign-in to fix.",
+      "Report the Outlook session: { signedIn, account, reason, authority, cachePath, readonly, scopes, lastLoginError, signInPending, verificationUri, userCode, expiresAt }. signedIn is true only when a token can actually be obtained for the scopes below, so an account cached under a narrower grant reports signedIn false with reason needsConsent, and an expired one reports reason expired - either way login starts a fresh sign-in. authority ends in consumers for personal accounts, organizations or common for work and school. scopes are the Graph permissions this process asks for - Mail.ReadWrite when the write tools are offered, Mail.Read in readonly mode, where no mailbox write is registered at all, which is why they are missing. lastLoginError carries why the last sign-in attempt failed. While a sign-in flow is open signInPending is true and this carries the verificationUri and userCode to show the user, with expiresAt, so the code is found here even when another client started the flow. Safe to call repeatedly to poll after login, but not free: confirming a session can mean asking Microsoft for a token and rewriting the cache, so poll every few seconds rather than in a tight loop, and treat reason unavailable as a failed check to retry rather than a sign-in to fix.",
     annotations: read,
     inputSchema: noArguments,
     handler: async (deps) => {
@@ -487,6 +502,48 @@ const coreTools: Tool[] = [
   }),
 ];
 
+/**
+ * The read flag, spelled two ways because an agent reads tool names more
+ * carefully than it reads booleans: `mark_unread` cannot be a double negative
+ * got wrong, and `list_emails` cannot be mistaken for a call that flips nothing.
+ */
+function flagTool(read: boolean): Tool {
+  return tool({
+    name: read ? "mark_read" : "mark_unread",
+    title: read ? "Mark as read" : "Mark as unread",
+    description: `Mark ${read ? "as read" : "as unread"} up to ${maxFlaggedMessages} messages given their ids, and return { read, updated: [{ id, isRead }], failed: [{ id, reason }] } read back from Graph. ${
+      read
+        ? "A message an agent has read on the user's behalf leaves the unread count this way."
+        : "This puts a message back in the unread count - the way to undo a mark_read, and nothing else is restored."
+    } Only the read flag moves: no mail is sent, read, moved or deleted, and an id Graph refuses is reported in failed while the others still change. Find ids with list_emails or search_emails. Calling it again with the same ids changes nothing.`,
+    annotations: flagHints,
+    inputSchema: z.strictObject({
+      ids: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(maxFlaggedMessages)
+        .describe(
+          `Message ids to flag, 1 to ${maxFlaggedMessages}. Duplicates are flagged once.`,
+        ),
+    }),
+    handler: async (deps, { ids }) => {
+      const { updated, failed } = await deps.graph.setMessageRead(ids, read);
+      return {
+        read,
+        updated,
+        // Always both halves: "nothing failed" and "not reported" must not look
+        // the same to a client reading the result.
+        failed,
+        ...(failed.length > 0
+          ? {
+              note: `${updated.length} of ${updated.length + failed.length} messages now carry read=${read}; every id that did not change is in failed with Graph's reason, shortened.`,
+            }
+          : {}),
+      };
+    },
+  });
+}
+
 type GraphRecipient = { emailAddress?: { address?: string } };
 
 type GraphDraft = {
@@ -557,9 +614,10 @@ const toField = (what: string) =>
     );
 
 /**
- * Drafts are the whole write surface, and the only thing they can do is create
- * or change a message nobody has sent. They appear in `tools/list` only when
- * the server holds `Mail.ReadWrite`, never in readonly mode.
+ * Drafts are the larger half of the write surface, and the only thing they can
+ * do is create or change a message nobody has sent. They appear in `tools/list`
+ * only when the server holds `Mail.ReadWrite`, never in readonly mode — the same
+ * rule the flag tools follow, since a read flag needs that scope too.
  */
 const draftTools: Tool[] = [
   tool({
@@ -768,8 +826,17 @@ const draftTools: Tool[] = [
   }),
 ];
 
+/**
+ * The read flag has its own group rather than a seat at the draft table: the
+ * draft tools are described — to a client, and in the tests that pin them — as
+ * the surface that writes a message, and a PATCH of `isRead` writes no message.
+ * What the two groups share is that both need `Mail.ReadWrite`, so both are
+ * absent from read-only mode.
+ */
+const flagTools: Tool[] = [flagTool(true), flagTool(false)];
+
 /** The whole registry, filtered per caller by `toolsFor`. */
-export const tools: Tool[] = [...coreTools, ...draftTools];
+export const tools: Tool[] = [...coreTools, ...flagTools, ...draftTools];
 
 /**
  * The two halves of the registry, by name: what a read-only server advertises,
@@ -778,17 +845,21 @@ export const tools: Tool[] = [...coreTools, ...draftTools];
  * instead of copying it, so prose cannot fall behind a registered tool.
  */
 export const readToolNames: string[] = coreTools.map((tool) => tool.name);
+export const flagToolNames: string[] = flagTools.map((tool) => tool.name);
 export const draftToolNames: string[] = draftTools.map((tool) => tool.name);
 
 /**
- * Readonly mode advertises no mailbox write at all: the draft tools are gone
- * from `tools/list` and the scope drops to `Mail.Read` (see `scopesFor`).
+ * Readonly mode advertises no mailbox write at all: the draft tools and the two
+ * flag tools are gone from `tools/list` and the scope drops to `Mail.Read` (see
+ * `scopesFor`), which could not write a flag even if it were offered.
  * The sign-in tools stay, because a read-only server still has to sign in.
  */
 export function toolsFor(config: Config): Tool[] {
-  return config.readonly
-    ? tools.filter((registered) => !draftTools.includes(registered))
-    : tools;
+  if (!config.readonly) return tools;
+  return tools.filter(
+    (registered) =>
+      !draftTools.includes(registered) && !flagTools.includes(registered),
+  );
 }
 
 export function createToolDeps(config: Config): ToolDeps {

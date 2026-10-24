@@ -13,7 +13,7 @@ import { loadConfig } from "../src/core/config.ts";
 import { admitRequest, isLoopbackHost } from "../src/core/http.ts";
 import type { Admission } from "../src/core/http.ts";
 import { startHttp } from "../src/mcp.ts";
-import { draftToolNames } from "../src/tools.ts";
+import { draftToolNames, flagToolNames } from "../src/tools.ts";
 import type { ToolDeps } from "../src/tools.ts";
 import type { Graph } from "../src/core/graph.ts";
 import type { Config } from "../src/core/config.ts";
@@ -336,8 +336,8 @@ test("readonly mode reaches the tool list over HTTP too", async (t) => {
   const client = new Client({ name: "http-test", version: "0.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(handle.url)));
   const names = (await client.listTools()).tools.map((tool) => tool.name);
-  for (const draft of draftToolNames)
-    assert.equal(names.includes(draft), false, `${draft} leaked into readonly`);
+  for (const write of [...draftToolNames, ...flagToolNames])
+    assert.equal(names.includes(write), false, `${write} leaked into readonly`);
   await client.close();
 });
 
