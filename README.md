@@ -154,25 +154,25 @@ Everything below is what `tools/list` advertises. The two writes — marking mai
 read or unread, and drafts — appear only when the server is not in read-only
 mode.
 
-| Tool                   | What it does                                                               |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `list_emails`          | One folder, newest first: `folder`, `unread`, `limit` ≤ 100, `cursor`      |
-| `search_emails`        | Whole mailbox in Graph search syntax, `limit` ≤ 1000                       |
-| `get_email`            | One message with its full plain-text body                                  |
-| `list_attachments`     | Attachment metadata only: id, name, type, size, isInline                   |
+| Tool                   | What it does                                                              |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `list_emails`          | One folder, newest first: `folder`, `unread`, `limit` ≤ 100, `cursor`     |
+| `search_emails`        | Whole mailbox in Graph search syntax, `limit` ≤ 1000                      |
+| `get_email`            | One message with its full plain-text body                                 |
+| `list_attachments`     | Attachment metadata only: id, name, type, size, isInline                  |
 | `download_attachment`  | Returns a session-scoped MCP resource link; server-local saving is opt-in |
-| `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error           |
-| `login`                | Starts sign-in and returns at once with the URL and code                   |
-| `logout`               | Deletes the saved session (marked destructive)                             |
-| `mark_read`            | Sets `isRead` on 1-100 message ids, each id reported back                  |
-| `mark_unread`          | Clears `isRead` on 1-100 message ids, the same shape                       |
-| `create_draft`         | A new unsent message, read back as stored                                  |
-| `create_reply_draft`   | An unsent reply that keeps the thread                                      |
-| `create_forward_draft` | An unsent forward, to the recipients you name                              |
-| `update_draft`         | Changes an unsent draft in place, only the fields you name                 |
-| `list_drafts`          | What is already sitting in Drafts                                          |
-| `delete_draft`         | Removes a draft (marked destructive)                                       |
-| `add_attachment`       | Adds a file to a draft, hard-capped at 3 MB                                |
+| `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error          |
+| `login`                | Starts sign-in and returns at once with the URL and code                  |
+| `logout`               | Deletes the saved session (marked destructive)                            |
+| `mark_read`            | Sets `isRead` on 1-100 message ids, each id reported back                 |
+| `mark_unread`          | Clears `isRead` on 1-100 message ids, the same shape                      |
+| `create_draft`         | A new unsent message, read back as stored                                 |
+| `create_reply_draft`   | An unsent reply that keeps the thread                                     |
+| `create_forward_draft` | An unsent forward, to the recipients you name                             |
+| `update_draft`         | Changes an unsent draft in place, only the fields you name                |
+| `list_drafts`          | What is already sitting in Drafts                                         |
+| `delete_draft`         | Removes a draft (marked destructive)                                      |
+| `add_attachment`       | Adds a file to a draft, hard-capped at 3 MB                               |
 
 List results carry `items` and, when there is more to read, `nextCursor` — pass
 it back as `cursor`. Resources are published too: `outlook://folders`,
@@ -266,8 +266,8 @@ carries, including the ids it refused.
 | `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                     |
 | `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                  |
 | `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                              |
-| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | Allowed directory for explicit `delivery: "server_file"` downloads. |
-| `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES` | `20971520` | Maximum decoded MCP attachment download/resource size in bytes (20 MiB); positive integer. |
+| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | Allowed directory for explicit `delivery: "server_file"` downloads.                           |
+| `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES` | `20971520`               | Maximum decoded MCP attachment download/resource size in bytes (20 MiB); positive integer.    |
 | `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides every write (draft tools and read flags) and asks Microsoft for `Mail.Read`. |
 | `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.     |
 | `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one. |

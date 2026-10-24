@@ -34,16 +34,16 @@ repository's `docs/clients.md` is the matrix for every client.
 
 ## Prefer the MCP tools
 
-| Tool                                                                                                                          | Use                                                          |
-| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `list_emails`                                                                                                                 | One folder, newest first, `folder`/`unread`/`limit`/`cursor` |
-| `search_emails`                                                                                                               | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`    |
-| `get_email`                                                                                                                   | One message, full plain-text body                            |
-| `list_attachments` / `download_attachment`                                                                                    | Metadata first; read the returned session-scoped MCP resource  |
-| `auth_status`                                                                                                                 | Session, authority, mode, scopes, last sign-in error         |
-| `login` / `logout`                                                                                                            | Start sign-in without waiting / delete the session           |
-| `mark_read` / `mark_unread`                                                                                                   | Flip the read flag on 1-100 ids, no content touched          |
-| `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment` | Write an unsent message                                      |
+| Tool                                                                                                                          | Use                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `list_emails`                                                                                                                 | One folder, newest first, `folder`/`unread`/`limit`/`cursor`  |
+| `search_emails`                                                                                                               | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`     |
+| `get_email`                                                                                                                   | One message, full plain-text body                             |
+| `list_attachments` / `download_attachment`                                                                                    | Metadata first; read the returned session-scoped MCP resource |
+| `auth_status`                                                                                                                 | Session, authority, mode, scopes, last sign-in error          |
+| `login` / `logout`                                                                                                            | Start sign-in without waiting / delete the session            |
+| `mark_read` / `mark_unread`                                                                                                   | Flip the read flag on 1-100 ids, no content touched           |
+| `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment` | Write an unsent message                                       |
 
 List results carry `items` and `nextCursor`: pass `nextCursor` back as `cursor`
 for the next page. Bodies only ever come from `get_email`, and attachment
