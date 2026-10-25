@@ -41,8 +41,36 @@ type Recorded = {
   body?: unknown;
 };
 
-function responder(path: string): unknown {
+/**
+ * The rule Graph applies to `POST …/attachments`: a `fileAttachment` with no
+ * `contentBytes` has no content as far as the service is concerned, and the
+ * answer is the bare "Required property is missing." (`ErrorRequiredPropertyMissing`)
+ * with nothing attached to the draft.
+ *
+ * This is here because a fake that accepted any body let the field be spelled
+ * `contentBase64` — the name of the tool's own argument, not of the wire field —
+ * and every test pass while no real draft ever took a file. `@odata.type` is
+ * checked with it: Graph needs the discriminator to know which attachment type
+ * the body describes.
+ */
+function storedAttachment(body: unknown): { id: string } {
+  const attachment = (body ?? {}) as Record<string, unknown>;
+  const missing = ["@odata.type", "name", "contentBytes"].filter(
+    (property) =>
+      attachment[property] === undefined || attachment[property] === "",
+  );
+  if (missing.length > 0)
+    throw new Error(
+      `{"error":{"code":"ErrorRequiredPropertyMissing","message":"Required property is missing. ${missing.join(", ")}"}}`,
+    );
+  return { id: "attachment-1" };
+}
+
+function responder(path: string, body?: unknown): unknown {
   if (path === "/next-attachments") return { value: [{ id: "two" }] };
+  // A POST to the collection adds one attachment; a GET lists them.
+  if (path.endsWith("/attachments") && body !== undefined)
+    return storedAttachment(body);
   if (path.endsWith("/attachments"))
     return {
       value: [{ id: "one/two" }],
@@ -54,7 +82,9 @@ function responder(path: string): unknown {
   return { value: ["message"] };
 }
 
-function fakeClient(respond: (path: string) => unknown = responder) {
+function fakeClient(
+  respond: (path: string, body?: unknown) => unknown = responder,
+) {
   const requests: Recorded[] = [];
   const client: GraphClient = {
     api(path) {
@@ -91,12 +121,12 @@ function fakeClient(respond: (path: string) => unknown = responder) {
         async post<T>(body: unknown) {
           request.verb = "post";
           request.body = body;
-          return respond(path) as T;
+          return respond(path, body) as T;
         },
         async patch<T>(body: unknown) {
           request.verb = "patch";
           request.body = body;
-          return respond(path) as T;
+          return respond(path, body) as T;
         },
         async delete() {
           request.verb = "delete";
@@ -109,7 +139,7 @@ function fakeClient(respond: (path: string) => unknown = responder) {
 }
 
 function graphFor(
-  respond?: (path: string) => unknown,
+  respond?: (path: string, body?: unknown) => unknown,
   options: { fetch?: FetchLike; maxUploadBytes?: number } = {},
 ) {
   const fake = fakeClient(respond);
@@ -635,10 +665,16 @@ test("a missing session fails a flag batch once, not once per id", async () => {
 });
 
 test("uploadAttachment posts a file under 3 MB as one attachment", async () => {
+  // `storedAttachment` answers the POST the way Graph does, so a body that would
+  // draw "Required property is missing." from the service fails here too.
   const session = uploadSession();
-  const { graph, requests } = graphFor(session.respond, {
-    fetch: session.fetch,
-  });
+  const { graph, requests } = graphFor(
+    (path, body) =>
+      path.endsWith("/attachments") && body !== undefined
+        ? storedAttachment(body)
+        : session.respond(path),
+    { fetch: session.fetch },
+  );
 
   const outcome = await graph.uploadAttachment("a/b", {
     name: "note.txt",
@@ -658,8 +694,13 @@ test("uploadAttachment posts a file under 3 MB as one attachment", async () => {
     "@odata.type": "#microsoft.graph.fileAttachment",
     name: "note.txt",
     contentType: "text/plain",
-    contentBase64: "aGVsbG8=",
+    contentBytes: "aGVsbG8=",
   });
+  assert.equal(
+    "contentBase64" in (request?.body as Record<string, unknown>),
+    false,
+    "the tool's argument name is not the wire field Graph reads",
+  );
   assert.deepEqual(
     session.puts,
     [],

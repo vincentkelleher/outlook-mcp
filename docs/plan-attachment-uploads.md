@@ -42,9 +42,21 @@ Source: [Attach large files to Outlook messages](https://learn.microsoft.com/en-
 
 | File size     | How                                                                             |
 | ------------- | ------------------------------------------------------------------------------- |
-| under 3 MB    | one `POST /me/messages/{id}/attachments` with `contentBase64`                   |
+| under 3 MB    | one `POST /me/messages/{id}/attachments` with `contentBytes`                    |
 | 3 MB – 150 MB | `POST …/attachments/createUploadSession`, then sequential `PUT`s of byte ranges |
 | over 150 MB   | nothing — Graph itself refuses, so this server refuses first                    |
+
+The small file goes up as one `fileAttachment`, and the field holding its bytes
+is called `contentBytes` on the wire — not `contentBase64`, which is what the
+tool's own argument is called. Graph reads the body for `contentBytes`, finds
+none, and answers `400 ErrorRequiredPropertyMissing`, "Required property is
+missing.", with nothing attached:
+
+```http
+POST /v1.0/me/messages/{id}/attachments
+{ "@odata.type": "#microsoft.graph.fileAttachment", "name": "note.txt",
+  "contentType": "text/plain", "contentBytes": "aGVsbG8=" }
+```
 
 Session mechanics, in the words of the document that defines them:
 

@@ -870,7 +870,12 @@ export function createGraph(deps: GraphDeps) {
             "@odata.type": "#microsoft.graph.fileAttachment",
             name: source.name,
             contentType: source.contentType,
-            contentBase64: bytes.toString("base64"),
+            // `contentBytes` is the wire name Graph's fileAttachment has, and it
+            // is required: a body that spells the bytes anything else —
+            // `contentBase64`, the name this tool's own argument carries — is a
+            // body with no content in Graph's eyes, and it answers the POST with
+            // the bare "Required property is missing." and attaches nothing.
+            contentBytes: bytes.toString("base64"),
           });
         return {
           draft,
