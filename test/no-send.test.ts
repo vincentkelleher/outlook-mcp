@@ -115,6 +115,7 @@ const draftWriteToolNames = [
   "create_reply_draft",
   "delete_draft",
   "list_drafts",
+  "remove_attachment",
   "update_draft",
 ];
 
@@ -126,7 +127,7 @@ const draftWriteToolNames = [
  */
 const flagWriteToolNames = ["mark_read", "mark_unread"];
 
-test("the registry is the read tools, two flag tools and seven draft tools, nothing else", () => {
+test("the registry is the read tools, two flag tools and eight draft tools, nothing else", () => {
   assert.deepEqual(
     [...draftToolNames].sort(),
     draftWriteToolNames,
@@ -137,7 +138,7 @@ test("the registry is the read tools, two flag tools and seven draft tools, noth
     flagWriteToolNames,
     "the flag surface changed: read-only mode and every assertion below depends on this list",
   );
-  assert.equal(draftToolNames.length, 7);
+  assert.equal(draftToolNames.length, 8);
   assert.equal(flagToolNames.length, 2);
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
@@ -219,12 +220,14 @@ test("the scan really distinguishes the create actions from the sending ones", (
   assert.match(graphSource, /\/createForward/);
 });
 
-test("the mutating Graph calls are exactly the seven reviewed mailbox writes", () => {
+test("the mutating Graph calls are exactly the nine reviewed mailbox writes", () => {
   // A name regex cannot see a path assembled in pieces, so this closes the
   // gap from the other side: every request that changes the mailbox goes
-  // through one of seven call sites in src/core/graph.ts — six on a draft and
-  // one PATCH of `isRead`. A new one is not automatically wrong, but it must be
-  // looked at, and this test is where that conversation starts.
+  // through one of nine call sites in src/core/graph.ts — eight on a draft (two
+  // on its attachments) and one PATCH of `isRead`. A new one is not
+  // automatically wrong, but it must be looked at, and this test is where that
+  // conversation starts. The tenth write, an upload session chunk, is not a
+  // builder call at all and is pinned on its own below.
   //
   // A type argument on the call is matched, not skipped, because that is how a
   // write hides from this count: `.patch<T>({ isRead: read })` was six calls for
@@ -237,9 +240,49 @@ test("the mutating Graph calls are exactly the seven reviewed mailbox writes", (
     .sort();
   assert.deepEqual(
     verbs,
-    ["delete", "patch", "patch", "post", "post", "post", "post"],
+    [
+      "delete",
+      "delete",
+      "patch",
+      "patch",
+      "post",
+      "post",
+      "post",
+      "post",
+      "post",
+    ],
     "a new mutating Graph call appeared: a draft write or a read flag may be fine, anything that transmits mail is not",
   );
+});
+
+test("the write the verb scan cannot see is one chunk PUT with no Authorization header", () => {
+  // An upload session URL is pre-authenticated — it carries its own bearer token
+  // — so the chunk cannot go through the SDK builder, which adds an
+  // `Authorization` header to everything it sends. It goes out over `fetch`,
+  // which the `.post|.put|.patch|.delete` scan above cannot see. So the one
+  // mailbox write that is not a builder call is named here: exactly one, and no
+  // Authorization header anywhere near it, because Graph says to send none.
+  const source = readFileSync(join(repo, "src/core/graph.ts"), "utf8");
+  const chunks = [...source.matchAll(/await put\(/g)];
+  assert.equal(
+    chunks.length,
+    1,
+    "the upload session chunk write moved, and this is where it is accounted for",
+  );
+  const chunkCall = source.slice(chunks[0].index, chunks[0].index + 600);
+  assert.match(
+    chunkCall,
+    /method:\s*"PUT"/,
+    "the one chunk write is not a PUT",
+  );
+  assert.equal(
+    /Authorization/.test(chunkCall),
+    false,
+    "a chunk PUT would carry the user's token to a URL that already carries one",
+  );
+  // The same URL is a credential, so the one response body handed straight back
+  // to a caller strikes it out, and the logger never sees it at all.
+  assert.match(source, /authtoken=/);
 });
 
 test("the read-flag write patches isRead on one message and nothing else", () => {
@@ -368,7 +411,7 @@ test("the instructions name every tool the server has, in both modes", async (t)
   }
 });
 
-test("without readonly the seven draft tools are advertised with their limits", async (t) => {
+test("without readonly the eight draft tools are advertised with their limits", async (t) => {
   const config = testConfig(t);
   const { client, names } = await advertised(t, config);
 
@@ -378,7 +421,7 @@ test("without readonly the seven draft tools are advertised with their limits", 
   );
   assert.match(
     client.getInstructions() ?? "",
-    /create_draft, create_reply_draft, create_forward_draft, update_draft, list_drafts, delete_draft and add_attachment/,
+    /create_draft, create_reply_draft, create_forward_draft, update_draft, list_drafts, delete_draft, add_attachment and remove_attachment/,
   );
 
   const create = (await client.listTools()).tools.find(

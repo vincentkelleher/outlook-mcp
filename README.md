@@ -154,25 +154,26 @@ Everything below is what `tools/list` advertises. The two writes — marking mai
 read or unread, and drafts — appear only when the server is not in read-only
 mode.
 
-| Tool                   | What it does                                                              |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `list_emails`          | One folder, newest first: `folder`, `unread`, `limit` ≤ 100, `cursor`     |
-| `search_emails`        | Whole mailbox in Graph search syntax, `limit` ≤ 1000                      |
-| `get_email`            | One message with its full plain-text body                                 |
-| `list_attachments`     | Attachment metadata only: id, name, type, size, isInline                  |
-| `download_attachment`  | Returns a session-scoped MCP resource link; server-local saving is opt-in |
-| `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error          |
-| `login`                | Starts sign-in and returns at once with the URL and code                  |
-| `logout`               | Deletes the saved session (marked destructive)                            |
-| `mark_read`            | Sets `isRead` on 1-100 message ids, each id reported back                 |
-| `mark_unread`          | Clears `isRead` on 1-100 message ids, the same shape                      |
-| `create_draft`         | A new unsent message, read back as stored                                 |
-| `create_reply_draft`   | An unsent reply that keeps the thread                                     |
-| `create_forward_draft` | An unsent forward, to the recipients you name                             |
-| `update_draft`         | Changes an unsent draft in place, only the fields you name                |
-| `list_drafts`          | What is already sitting in Drafts                                         |
-| `delete_draft`         | Removes a draft (marked destructive)                                      |
-| `add_attachment`       | Adds a file to a draft, hard-capped at 3 MB                               |
+| Tool                   | What it does                                                               |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `list_emails`          | One folder, newest first: `folder`, `unread`, `limit` ≤ 100, `cursor`      |
+| `search_emails`        | Whole mailbox in Graph search syntax, `limit` ≤ 1000                       |
+| `get_email`            | One message with its full plain-text body                                  |
+| `list_attachments`     | Attachment metadata only: id, name, type, size, isInline                   |
+| `download_attachment`  | Returns a session-scoped MCP resource link; server-local saving is opt-in  |
+| `auth_status`          | Session, authority, cache path, mode, scopes, last sign-in error           |
+| `login`                | Starts sign-in and returns at once with the URL and code                   |
+| `logout`               | Deletes the saved session (marked destructive)                             |
+| `mark_read`            | Sets `isRead` on 1-100 message ids, each id reported back                  |
+| `mark_unread`          | Clears `isRead` on 1-100 message ids, the same shape                       |
+| `create_draft`         | A new unsent message, read back as stored                                  |
+| `create_reply_draft`   | An unsent reply that keeps the thread                                      |
+| `create_forward_draft` | An unsent forward, to the recipients you name                              |
+| `update_draft`         | Changes an unsent draft in place, only the fields you name                 |
+| `list_drafts`          | What is already sitting in Drafts                                          |
+| `delete_draft`         | Removes a draft (marked destructive)                                       |
+| `add_attachment`       | Puts a file on a draft: base64, a server file, or a copy of a received one |
+| `remove_attachment`    | Takes one file back off a draft (marked destructive)                       |
 
 List results carry `items` and, when there is more to read, `nextCursor` — pass
 it back as `cursor`. Resources are published too: `outlook://folders`,
@@ -212,6 +213,39 @@ requests fail with an actionable error, never silently fall back to a path.
 This changes the previous default: clients relying on a returned filesystem path
 must now request `delivery: "server_file"`.
 
+### Putting files on a draft
+
+`add_attachment` takes **exactly one source**, and which one you pick decides
+whether the file ever enters the conversation:
+
+| Source           | Bytes in the transcript | Notes                                                                   |
+| ---------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `fromAttachment` | no                      | copies an attachment this mailbox already has                           |
+| `serverPath`     | no                      | a file inside `OUTLOOK_MCP_ATTACHMENT_DIR`, streamed 3.75 MiB at a time |
+| `contentBase64`  | **yes**                 | for a file the conversation already holds; needs `name`                 |
+
+`download_attachment delivery: "server_file"` writes where `serverPath` reads,
+so a received file can be re-attached without its bytes crossing a model — and
+that is the whole of it: `serverPath` is confined to the attachment directory, so
+an absolute path, a `..` or a symlink is refused before anything is opened. A
+remote client has no files on the server, so it uses `fromAttachment`.
+
+Graph takes a file in **one request under 3 MB** and by **upload session above
+it**; either way nothing lands on the draft unless every byte was accepted, so a
+failed call leaves the draft as it was and the answer says which route it took
+(`attachment.transport`). The ceiling is `OUTLOOK_MCP_MAX_UPLOAD_BYTES` —
+**35 MiB** by default, 150 MB at most, which is what Graph takes. The default is
+the mailbox's own limit rather than Graph's on purpose: a 140 MB attachment would
+upload happily and then fail at Send, when the user is least able to do anything
+about it.
+
+Both attachment tools refuse a target Graph reports as **not a draft**: an
+attachment can be added to a sent message through Graph, and this server will not
+do that, in either direction. `remove_attachment` is marked destructive for the
+same reason `delete_draft` is — the file leaves the draft and there is no undo —
+and every answer lists the draft's attachments with their ids, so the id the next
+call needs is already in the last one.
+
 ### Nothing here can send mail
 
 There is no `/send`, no `/reply`, no `/forward`, and no `Mail.Send` scope. A
@@ -224,9 +258,12 @@ changes no content and transmits nothing:
   guess who to mail.
 - Every draft result reads back what Microsoft actually stored, so the human can
   audit it.
+- An attachment write reads its target first and refuses a message Graph says is
+  not a draft, so a message that has been sent keeps the files it went out with.
 - Tests assert the registry contains no send-capable tool and that no request
   path ends in `/send`, `/reply` or `/forward`, and they pin every mutating
-  Graph call: six on a draft and one `PATCH` of `isRead`.
+  Graph call: eight on a draft, one `PATCH` of `isRead`, and the upload-session
+  chunk `PUT` that the verb scan cannot see.
 
 If sending ever becomes a feature, it needs its own scope, its own confirmation,
 and its own conversation.
@@ -260,23 +297,24 @@ carries, including the ids it refused.
 
 ## Configuration
 
-| Variable                           | Default                  | Purpose                                                                                       |
-| ---------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
-| `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                       |
-| `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                     |
-| `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                  |
-| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                              |
-| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | Allowed directory for explicit `delivery: "server_file"` downloads.                           |
-| `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES` | `20971520`               | Maximum decoded MCP attachment download/resource size in bytes (20 MiB); positive integer.    |
-| `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides every write (draft tools and read flags) and asks Microsoft for `Mail.Read`. |
-| `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.     |
-| `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one. |
-| `OUTLOOK_MCP_ALLOWED_HOSTS`        | unset                    | Extra `Host` names to serve, comma-separated, for a server reached by a name of your own.     |
-| `OUTLOOK_MCP_ALLOWED_ORIGINS`      | unset                    | Extra browser origins, comma-separated, beyond the same origin.                               |
-| `OUTLOOK_MCP_SESSION_IDLE_MINUTES` | `1440`                   | `serve --http` only: how long an HTTP session with nothing connected survives.                |
-| `OUTLOOK_MCP_IMAGE`                | the published GHCR image | Which image `config docker` names, if you mirror it elsewhere.                                |
-| `OUTLOOK_LOG_LEVEL`                | `info`                   | `debug`, `info`, `warn`, `error` or `silent`. Every log line goes to stderr.                  |
-| `OUTLOOK_LOG_FORMAT`               | `text`                   | `text` for a terminal, `json` for a log collector.                                            |
+| Variable                           | Default                  | Purpose                                                                                                    |
+| ---------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `OUTLOOK_OAUTH_CLIENT_ID`          | — (required)             | The Application (client) ID from your app registration.                                                    |
+| `OUTLOOK_OAUTH_TENANT`             | `consumers`              | `common` or `organizations` for a work or school mailbox.                                                  |
+| `OUTLOOK_MCP_HOME`                 | `~/.outlook-mcp`         | Where the token cache lives.                                                                               |
+| `OUTLOOK_MCP_STATE_DIR`            | `~/.outlook-mcp/state`   | Sign-in state: the URL, the code, the last error. Never a token.                                           |
+| `OUTLOOK_MCP_ATTACHMENT_DIR`       | `$TMPDIR/outlook-mcp`    | Allowed directory for explicit `delivery: "server_file"` downloads.                                        |
+| `OUTLOOK_MCP_MAX_ATTACHMENT_BYTES` | `20971520`               | Maximum decoded MCP attachment download/resource size in bytes (20 MiB); positive integer.                 |
+| `OUTLOOK_MCP_MAX_UPLOAD_BYTES`     | `36700160`               | Maximum file `add_attachment` will put on a draft (35 MiB); at most 150 MiB, which is Graph's own ceiling. |
+| `OUTLOOK_MCP_READONLY`             | unset                    | Read-only: hides every write (draft tools and read flags) and asks Microsoft for `Mail.Read`.              |
+| `OUTLOOK_MCP_HOST`                 | `127.0.0.1`              | `serve --http` only: the interface to bind. The image sets `0.0.0.0`; see the note below.                  |
+| `OUTLOOK_MCP_PORT`                 | `3939`                   | `serve --http` only: the port to bind. `--port` overrides it, and accepts `0` for a free one.              |
+| `OUTLOOK_MCP_ALLOWED_HOSTS`        | unset                    | Extra `Host` names to serve, comma-separated, for a server reached by a name of your own.                  |
+| `OUTLOOK_MCP_ALLOWED_ORIGINS`      | unset                    | Extra browser origins, comma-separated, beyond the same origin.                                            |
+| `OUTLOOK_MCP_SESSION_IDLE_MINUTES` | `1440`                   | `serve --http` only: how long an HTTP session with nothing connected survives.                             |
+| `OUTLOOK_MCP_IMAGE`                | the published GHCR image | Which image `config docker` names, if you mirror it elsewhere.                                             |
+| `OUTLOOK_LOG_LEVEL`                | `info`                   | `debug`, `info`, `warn`, `error` or `silent`. Every log line goes to stderr.                               |
+| `OUTLOOK_LOG_FORMAT`               | `text`                   | `text` for a terminal, `json` for a log collector.                                                         |
 
 A `.env` in the working directory is read for you, and real environment
 variables win over it.

@@ -95,6 +95,12 @@ export const neverLoggedKeys = [
   "body",
   "contentBase64",
   "contentBytes",
+  // An upload session URL is pre-authenticated: the bearer token that carries it
+  // to Outlook sits in its query string, so the URL *is* token material. The
+  // chunk logger never names it and Graph can put it in an error body, which is
+  // struck out where it happens as well as here.
+  "uploadUrl",
+  "authtoken",
 ] as const;
 
 /** Fields a line carries besides its message. */
@@ -180,6 +186,9 @@ const content = new Set([
   "comment",
   "name",
   "dir",
+  // Where a file on this machine lives is the user's business, and the path came
+  // from a model: counted, not written, until somebody asks for `debug`.
+  "serverPath",
   "contentBase64",
   "contentBytes",
 ]);

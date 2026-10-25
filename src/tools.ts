@@ -1,13 +1,3 @@
-import {
-  closeSync,
-  constants,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  realpathSync,
-  writeSync,
-} from "node:fs";
-import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { createAuth, logout } from "./core/auth.ts";
 import type { AuthStatus } from "./core/auth.ts";
@@ -21,19 +11,23 @@ import {
 } from "./core/device-login.ts";
 import {
   createGraph,
+  defaultMaxUploadBytes,
   defaultPageSize,
-  maxAttachmentBytes,
+  maxGraphUploadBytes,
   maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
+  singleRequestAttachmentBytes,
   withoutUndefined,
 } from "./core/graph.ts";
 import type { Graph } from "./core/graph.ts";
+import { attachmentPath, writeNoFollow } from "./core/files.ts";
 import { logger } from "./core/log.ts";
-import { attachmentContent, safeFileName } from "./core/attachments.ts";
+import { attachmentContent } from "./core/attachments.ts";
 import type { GraphAttachment } from "./core/attachments.ts";
+import { sourceOf } from "./core/uploads.ts";
 
-/** The one place this server writes a file: the attachment directory. */
+/** Diagnostics about the attachment directory, whose guard lives in `files.ts`. */
 const log = logger("storage");
 
 /**
@@ -153,98 +147,27 @@ function metadataOf(attachment: GraphAttachment) {
 }
 
 /**
- * Attachments may only land inside the configured attachment directory, so both
- * halves of the path are checked: a caller-supplied `dir` is resolved against it,
- * the sender's file name is reduced to one leaf, and the final path is verified
- * resolved and real - so neither `..` in a name nor a symlink waiting inside the
- * directory can write outside - before a single byte is written.
+ * The draft's attachments, read back so the id the next call needs is already in
+ * the answer to this one — which is what makes `remove_attachment` callable
+ * without a round trip through `list_attachments`.
+ *
+ * The write is over by the time this runs, so a failure here sits beside a
+ * successful write rather than replacing one: "the file is on the draft and its
+ * list could not be read" and "there is no file on the draft" must never read
+ * the same to the caller.
  */
-/**
- * Open the file without following a symlink, so the gap between the realpath
- * check and the write cannot be used to swap the destination for a link.
- * Defence in depth rather than the guard: whoever could plant that symlink
- * already writes inside a 0700 directory. Where the flag does not exist the
- * realpath check stands alone, and an overwrite still works, which a "wx" flag
- * would break on the second download of the same attachment.
- */
-const noFollowWriteFlag: number | string =
-  typeof constants.O_NOFOLLOW === "number"
-    ? constants.O_WRONLY |
-      constants.O_CREAT |
-      constants.O_TRUNC |
-      constants.O_NOFOLLOW
-    : "w";
-
-/**
- * `writeFileSync` types its flag as a string, so a numeric one needs the lower
- * level open. Writing by descriptor also sets the mode at creation; a file that
- * already exists keeps the mode it has, which is what a re-download wants.
- */
-function writeNoFollow(path: string, bytes: Buffer): void {
-  const descriptor = openSync(path, noFollowWriteFlag, 0o600);
+async function attachmentsOn(deps: ToolDeps, messageId: string) {
   try {
-    writeSync(descriptor, bytes);
-  } finally {
-    closeSync(descriptor);
+    return {
+      attachments: (
+        (await deps.graph.listAttachments(messageId, true)) as GraphAttachment[]
+      ).map(metadataOf),
+    };
+  } catch (error) {
+    return {
+      attachmentsNote: `The file is on the draft; its attachment list could not be read back: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-}
-
-/**
- * Every refusal in `attachmentPath` goes through here. They are the checks that
- * stand between a sender's file name and this machine's disk, so when one bites
- * it is worth a warning even though the caller is answered with a reason: a
- * refusal is either a hostile name or a configuration nobody meant.
- */
-function refuse(message: string): never {
-  log.warn("attachment write refused", { reason: message });
-  throw new Error(message);
-}
-
-function attachmentPath(
-  config: Config,
-  dir: string | undefined,
-  rawName: string,
-): { path: string; name: string } {
-  const base = resolve(config.attachmentDir);
-  const inside = (path: string, root: string) =>
-    path === root || path.startsWith(root + sep);
-  const target = dir ? resolve(base, dir) : base;
-  if (!inside(target, base))
-    refuse(
-      `dir must be inside the attachment directory ${base}, not ${target}.`,
-    );
-  mkdirSync(target, { recursive: true, mode: 0o700 });
-  // Then compare what the paths really are, so a symlink cannot point outside.
-  const realBase = realpathSync(base);
-  const realTarget = realpathSync(target);
-  if (!inside(realTarget, realBase))
-    refuse(
-      `dir must be inside the attachment directory ${realBase}, not ${realTarget}.`,
-    );
-  const name = safeFileName(rawName);
-  const path = join(target, name);
-  // The name is sender data, so its destination is verified rather than trusted:
-  // no added segment, and nothing already waiting at that name may lead outside -
-  // a symlink there would carry the write with it, dangling or not. Where nothing
-  // exists yet, the directory's own real path answers for the file.
-  if (!inside(path, target))
-    refuse(
-      `${name} would be written outside the attachment directory ${base}, not at ${path}.`,
-    );
-  // A link at the destination goes wherever its author chose, and `realpath`
-  // cannot even resolve a dangling one, so no link is written through at all.
-  const waiting = lstatSync(path, { throwIfNoEntry: false });
-  if (waiting?.isSymbolicLink())
-    refuse(
-      `${name} is already a symlink, so writing it could land outside the attachment directory ${realBase}.`,
-    );
-  const real =
-    waiting === undefined ? join(realTarget, name) : realpathSync(path);
-  if (!inside(real, realBase))
-    refuse(
-      `${name} would be written outside the attachment directory ${realBase}, not at ${real}.`,
-    );
-  return { path, name };
 }
 
 const coreTools: Tool[] = [
@@ -807,34 +730,121 @@ const draftTools: Tool[] = [
   tool({
     name: "add_attachment",
     title: "Add attachment",
-    description: `Add a file to a draft that is not sent yet, then read the draft back. The decoded file must stay under ${maxAttachmentBytes} bytes (3 MB): anything larger is refused before a request is made, and the draft is left as it was. Graph needs an upload session from 3 to 150 MB and this server has none. Read the file yourself and pass its base64 content; do not ask the human to paste it.`,
+    description: `Put one file on a draft that is not sent yet, then read the draft and the files on it back. Name exactly one source, and prefer one that does not pass through the conversation: fromAttachment copies an attachment this mailbox already has, serverPath takes a file from the server's own attachment directory, and contentBase64 carries bytes you hold here - the only source that puts a file in front of a model, and no human should be asked to paste one. The limit is OUTLOOK_MCP_MAX_UPLOAD_BYTES: ${defaultMaxUploadBytes} bytes (35 MB) by default, ${maxGraphUploadBytes} bytes (150 MB) at most because that is all Graph takes, and a mailbox sends still fewer bytes than either. Under ${singleRequestAttachmentBytes} bytes (3 MB) a file goes up in one request and a larger one in ordered chunks of an upload session; either way nothing is attached unless every byte was accepted, so a failed call leaves the draft as it was. A target Graph says is not a draft is refused outright. The answer lists the draft's attachments with their ids, and remove_attachment takes one off again.`,
     annotations: draftHints,
+    inputSchema: z
+      .strictObject({
+        messageId: messageIdField,
+        name: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "The file name the recipient sees, such as quote.pdf. Defaults to the source's own name - the leaf of serverPath, or the copied attachment's name, whose sender does not get a vote on what it is spelled like. Required with contentBase64, which carries no name of its own.",
+          ),
+        contentType: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "The file's MIME type, such as application/pdf. Defaults to the copied attachment's own type, and to application/octet-stream otherwise.",
+          ),
+        contentBase64: z
+          .base64()
+          .optional()
+          .describe(
+            "The file's content, base64-encoded. For a file this conversation already holds and nobody else could read; anything bigger belongs in serverPath or fromAttachment, because base64 adds a third to a file and every character of it costs a token.",
+          ),
+        serverPath: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "A file inside the server's attachment directory, by relative path such as downloads/quote.pdf. That is where download_attachment delivery=server_file leaves a file, so a received file can be re-attached without its bytes crossing this conversation. Absolute paths, .. and symlinks are refused; a remote client has no files on this server, so use fromAttachment instead.",
+          ),
+        fromAttachment: z
+          .strictObject({
+            messageId: z
+              .string()
+              .min(1)
+              .describe("The id of the message holding the file."),
+            attachmentId: z
+              .string()
+              .min(1)
+              .describe("That attachment's id, from list_attachments."),
+          })
+          .optional()
+          .describe(
+            "Copy an attachment this mailbox already has onto the draft. Graph answers the size, the name and the type, and the bytes go from one mailbox store to the other without entering this conversation or touching a disk.",
+          ),
+      })
+      .refine(
+        (request) =>
+          [
+            request.contentBase64,
+            request.serverPath,
+            request.fromAttachment,
+          ].some((source) => source !== undefined),
+        {
+          message:
+            "add_attachment needs one source: contentBase64, serverPath or fromAttachment.",
+        },
+      )
+      .refine(
+        (request) =>
+          [
+            request.contentBase64,
+            request.serverPath,
+            request.fromAttachment,
+          ].filter((source) => source !== undefined).length === 1,
+        {
+          message:
+            "add_attachment takes one source at a time, so it is clear which file is meant.",
+        },
+      )
+      .refine(
+        (request) =>
+          request.contentBase64 === undefined || request.name !== undefined,
+        { message: "contentBase64 needs name: base64 carries no file name." },
+      ),
+    handler: async (deps, request) => {
+      const source = await sourceOf(deps.graph, deps.config, request);
+      const { draft, attachment } = await deps.graph.uploadAttachment(
+        request.messageId,
+        source,
+      );
+      return {
+        ...draftEcho(draft),
+        attachment,
+        ...(await attachmentsOn(deps, request.messageId)),
+      };
+    },
+  }),
+  tool({
+    name: "remove_attachment",
+    title: "Remove attachment",
+    description:
+      "Take one file off a draft that is not sent yet, then read the draft and the files left on it back. Find the id with list_attachments. Nothing else about the draft changes and nothing is sent, but the file leaves the draft and there is no undo here - if a person put it there, ask first. A target Graph says is not a draft is refused, so a message that has already been sent keeps the files it went out with.",
+    annotations: { ...draftHints, destructiveHint: true },
     inputSchema: z.strictObject({
       messageId: messageIdField,
-      name: z
+      attachmentId: z
         .string()
-        .min(1)
-        .describe("The file name the recipient sees, such as quote.pdf."),
-      contentType: z
-        .string()
-        .min(1)
-        .default("application/octet-stream")
-        .describe("The file's MIME type, such as application/pdf."),
-      contentBase64: z
-        .base64()
         .min(1)
         .describe(
-          `The file's content, base64-encoded, decoding to under ${maxAttachmentBytes} bytes.`,
+          "The attachment's id, from list_attachments or add_attachment.",
         ),
     }),
-    handler: async (deps, { messageId, name, contentType, contentBase64 }) =>
-      draftEcho(
-        (await deps.graph.addAttachment(messageId, {
-          name,
-          contentType,
-          contentBase64,
-        })) as GraphDraft,
-      ),
+    handler: async (deps, { messageId, attachmentId }) => {
+      const draft = await deps.graph.deleteAttachment(messageId, attachmentId);
+      return {
+        removed: true,
+        messageId,
+        attachmentId,
+        ...draftEcho(draft),
+        ...(await attachmentsOn(deps, messageId)),
+      };
+    },
   }),
 ];
 
@@ -877,7 +887,10 @@ export function toolsFor(config: Config): Tool[] {
 export function createToolDeps(config: Config): ToolDeps {
   const auth = createAuth({ config });
   return {
-    graph: createGraph({ token: () => auth.accessToken() }),
+    graph: createGraph({
+      token: () => auth.accessToken(),
+      maxUploadBytes: config.maxUploadBytes,
+    }),
     config,
     authStatus: () => auth.authStatus(),
     startLogin,

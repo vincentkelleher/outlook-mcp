@@ -54,14 +54,21 @@ export async function attachmentMetadata(
   return attachment;
 }
 
-/** Preflight metadata before fetching a body, then enforce the actual decoded size. */
+/**
+ * Preflight metadata before fetching a body, then enforce the actual decoded
+ * size. `prefetched` is for a caller that read the metadata a moment ago to
+ * answer something else about the attachment — a copy, which needs its name and
+ * type as well as its size — and should not have to ask twice.
+ */
 export async function attachmentContent(
   graph: Graph,
   messageId: string,
   attachmentId: string,
   maximum: number,
+  prefetched?: GraphAttachment,
 ) {
-  await attachmentMetadata(graph, messageId, attachmentId, maximum);
+  if (prefetched === undefined)
+    await attachmentMetadata(graph, messageId, attachmentId, maximum);
   const attachment = (await graph.getAttachment(
     messageId,
     attachmentId,

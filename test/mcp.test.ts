@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,12 +27,13 @@ import { loadConfig } from "../src/core/config.ts";
 import type { Config } from "../src/core/config.ts";
 import { writeLoginState } from "../src/core/device-login.ts";
 import { AuthRequiredError, noSessionMessage } from "../src/core/errors.ts";
-import type { Graph, Page } from "../src/core/graph.ts";
+import type { Graph, Page, UploadSource } from "../src/core/graph.ts";
 import {
   defaultPageSize,
   maxFlaggedMessages,
   maxPageSize,
   maxSearchPageSize,
+  singleRequestAttachmentBytes,
 } from "../src/core/graph.ts";
 import { captureLogs } from "./support/log-capture.ts";
 
@@ -74,7 +77,8 @@ type Calls = {
   patched: [string, unknown][];
   draftPages: unknown[];
   deleted: string[];
-  uploaded: [string, unknown][];
+  uploaded: [string, UploadSource][];
+  removed: [string, string][];
   flags: [string[], boolean][];
   loginStarts: number;
   logouts: string[];
@@ -129,6 +133,7 @@ function fakeDeps(
     draftPages: [],
     deleted: [],
     uploaded: [],
+    removed: [],
     flags: [],
     loginStarts: 0,
     logouts: [],
@@ -254,9 +259,26 @@ function fakeDeps(
       guard();
       calls.deleted.push(messageId);
     },
-    async addAttachment(messageId, attachment) {
+    async uploadAttachment(messageId, source) {
       guard();
-      calls.uploaded.push([messageId, attachment]);
+      calls.uploaded.push([messageId, source]);
+      return {
+        draft: { ...storedDraft, id: messageId },
+        attachment: {
+          id: "attachment-1",
+          name: source.name,
+          contentType: source.contentType,
+          bytes: source.size,
+          transport:
+            source.size < singleRequestAttachmentBytes
+              ? "single_request"
+              : "upload_session",
+        },
+      };
+    },
+    async deleteAttachment(messageId, attachmentId) {
+      guard();
+      calls.removed.push([messageId, attachmentId]);
       return { ...storedDraft, id: messageId };
     },
     async setMessageRead(ids, read) {
@@ -390,10 +412,12 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
 
   // The annotations are what make a careful client ask the human first, so they
   // are asserted on everything that writes a draft. `list_drafts` is the one
-  // member of the draft group that only reads, and `delete_draft` is the one
-  // that destroys, so both sit outside the plain write shape.
+  // member of the draft group that only reads, and `delete_draft` and
+  // `remove_attachment` are the two that destroy something, so all three sit
+  // outside the plain write shape.
+  const destroys = ["delete_draft", "remove_attachment"];
   for (const name of draftToolNames.filter(
-    (name) => name !== "delete_draft" && name !== "list_drafts",
+    (name) => !destroys.includes(name) && name !== "list_drafts",
   )) {
     assert.deepEqual(
       listed.tools.find((tool) => tool.name === name)?.annotations,
@@ -406,11 +430,13 @@ test("tools/list carries every tool, its annotations and the limits it enforces"
     readAnnotations,
     "listing drafts is a GET and must not advertise itself as a write",
   );
-  const deleteTool = listed.tools.find((tool) => tool.name === "delete_draft");
-  assert.deepEqual(deleteTool?.annotations, {
-    ...writeAnnotations,
-    destructiveHint: true,
-  });
+  for (const name of destroys) {
+    assert.deepEqual(
+      listed.tools.find((tool) => tool.name === name)?.annotations,
+      { ...writeAnnotations, destructiveHint: true },
+      `${name} takes something away and must say so`,
+    );
+  }
 
   // The flag tools write, so they do not advertise themselves as reads — but
   // they are the writes a client may retry: a message already read stays read.
@@ -965,7 +991,7 @@ test("without a session a flag call gives one login step, not one per id", async
   assert.match(textOf(result), /No Outlook session.*Call the login tool/s);
 });
 
-test("add_attachment uploads a file to the draft within the schema's bounds", async (t) => {
+test("add_attachment carries base64 content and echoes the draft, not the upload", async (t) => {
   const { deps, calls } = fakeDeps(testConfig(t));
   const client = await connect(t, deps);
 
@@ -976,25 +1002,43 @@ test("add_attachment uploads a file to the draft within the schema's bounds", as
     contentBase64: "aGVsbG8=",
   });
   assert.equal(added.isError, undefined);
-  assert.deepEqual(calls.uploaded, [
-    [
-      "draft-1",
-      {
-        name: "note.txt",
-        contentType: "text/plain",
-        contentBase64: "aGVsbG8=",
-      },
-    ],
-  ]);
-  assert.equal(JSON.parse(textOf(added)).id, "draft-1");
+  assert.equal(calls.uploaded.length, 1);
+  const [target, source] = calls.uploaded[0];
+  assert.equal(target, "draft-1");
+  assert.equal(source.name, "note.txt");
+  assert.equal(source.contentType, "text/plain");
+  assert.equal(source.size, 5);
+  assert.equal((await source.read(0, 5)).toString(), "hello");
+
+  // The echo is the draft: `POST …/attachments` answers with the attachment, and
+  // an attachment echoed as a draft reads like a message with no subject and no
+  // body, which is how a caller learns the wrong thing.
+  const payload = JSON.parse(textOf(added));
+  assert.equal(payload.id, "draft-1");
+  assert.equal(payload.subject, "Weekly report");
+  assert.deepEqual(payload.to, ["ana@example.com"]);
+  assert.equal(payload.sent, false);
+  assert.equal(payload.attachment.bytes, 5);
+  assert.equal(payload.attachment.transport, "single_request");
+  assert.deepEqual(
+    payload.attachments.map((file: { id: string }) => file.id),
+    ["attachment-1"],
+  );
+
+  // `attachments` is metadata only: the id belongs in the answer, the content
+  // does not come back down the wire twice.
+  assert.equal(
+    JSON.stringify(payload.attachments).includes("contentBytes"),
+    false,
+    "the read-back carries file content",
+  );
 
   await call(client, "add_attachment", {
     messageId: "draft-2",
     name: "note.txt",
     contentBase64: "aGVsbG8=",
   });
-  const defaulted = calls.uploaded[1][1] as { contentType: string };
-  assert.equal(defaulted.contentType, "application/octet-stream");
+  assert.equal(calls.uploaded[1][1].contentType, "application/octet-stream");
 
   // Content that is not base64 never reaches Graph, let alone the draft.
   const broken = await call(client, "add_attachment", {
@@ -1006,6 +1050,125 @@ test("add_attachment uploads a file to the draft within the schema's bounds", as
   assert.equal(broken.isError, true);
   assert.match(textOf(broken), /Invalid arguments for tool add_attachment/);
   assert.equal(calls.uploaded.length, 2);
+});
+
+test("add_attachment names exactly one source, and says so when it is given none or two", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const none = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    name: "note.txt",
+  });
+  assert.equal(none.isError, true);
+  assert.match(textOf(none), /needs one source/);
+
+  const two = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    name: "note.txt",
+    contentBase64: "aGVsbG8=",
+    serverPath: "note.txt",
+  });
+  assert.equal(two.isError, true);
+  assert.match(textOf(two), /one source at a time/);
+
+  // Base64 carries no name of its own, so a call that gives only that has said
+  // nothing about what the recipient will see the file called.
+  const nameless = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    contentBase64: "aGVsbG8=",
+  });
+  assert.equal(nameless.isError, true);
+  assert.match(textOf(nameless), /needs name/);
+
+  assert.deepEqual(calls.uploaded, []);
+});
+
+test("add_attachment copies a received attachment without its bytes entering the answer", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const added = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    fromAttachment: { messageId: "mail-1", attachmentId: "attachment-1" },
+  });
+  assert.equal(added.isError, undefined);
+  const source = calls.uploaded[0][1];
+  // Name and type come from the attachment being copied: the caller named no
+  // file, and the one that exists already says what it is.
+  assert.equal(source.name, "note.txt");
+  assert.equal(source.contentType, "text/plain");
+  assert.equal(source.size, 5);
+  assert.equal((await source.read(0, 5)).toString(), "hello");
+  // Metadata first, then the content: the size is settled before the file is
+  // fetched, so a copy too big to attach costs one small request.
+  assert.equal(calls.download.length, 2);
+  assert.deepEqual(calls.download[0], ["mail-1", "attachment-1"]);
+  const payload = JSON.parse(textOf(added));
+  assert.equal(JSON.stringify(payload).includes("aGVsbG8="), false);
+});
+
+test("add_attachment takes serverPath from inside the attachment directory and nowhere else", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+  const dir = join(deps.config.attachmentDir, "downloads");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "quote.pdf"), "the quote");
+
+  const added = await call(client, "add_attachment", {
+    messageId: "draft-1",
+    serverPath: "downloads/quote.pdf",
+  });
+  assert.equal(added.isError, undefined);
+  const source = calls.uploaded[0][1];
+  assert.equal(
+    source.name,
+    "quote.pdf",
+    "the leaf of the path is the file's name",
+  );
+  assert.equal(source.size, "the quote".length);
+  assert.equal((await source.read(0, source.size)).toString(), "the quote");
+  // The descriptor is released by the upload, however it ends.
+  assert.equal(typeof source.close, "function");
+  source.close?.();
+
+  for (const serverPath of ["../secret.txt", "/etc/passwd", "missing.pdf"]) {
+    const refused = await call(client, "add_attachment", {
+      messageId: "draft-1",
+      serverPath,
+    });
+    assert.equal(refused.isError, true, `${serverPath} was accepted`);
+    assert.match(textOf(refused), /attachment directory|no file at/);
+  }
+  assert.equal(calls.uploaded.length, 1);
+});
+
+test("remove_attachment takes one file off a draft and reads back the rest", async (t) => {
+  const { deps, calls } = fakeDeps(testConfig(t));
+  const client = await connect(t, deps);
+
+  const removed = await call(client, "remove_attachment", {
+    messageId: "draft-1",
+    attachmentId: "attachment-1",
+  });
+  assert.equal(removed.isError, undefined);
+  assert.deepEqual(calls.removed, [["draft-1", "attachment-1"]]);
+  const payload = JSON.parse(textOf(removed));
+  assert.equal(payload.removed, true);
+  assert.equal(payload.id, "draft-1");
+  assert.equal(payload.sent, false);
+  assert.deepEqual(
+    payload.attachments.map((file: { id: string }) => file.id),
+    ["attachment-1"],
+    "what is left on the draft is what Graph says is left",
+  );
+
+  const guess = await call(client, "remove_attachment", {
+    messageId: "draft-1",
+  });
+  assert.equal(guess.isError, true);
+  assert.match(textOf(guess), /attachmentId/);
+  assert.equal(calls.removed.length, 1);
 });
 
 test("recipients are validated addresses before anything is written", async (t) => {

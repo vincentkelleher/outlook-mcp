@@ -69,8 +69,11 @@ function fakeGraph(): { graph: Graph; calls: Calls } {
     async deleteDraft() {
       throw new Error("the CLI must not delete drafts");
     },
-    async addAttachment() {
+    async uploadAttachment() {
       throw new Error("the CLI must not upload attachments");
+    },
+    async deleteAttachment() {
+      throw new Error("the CLI must not remove attachments");
     },
     // Flagging is the one write the CLI does have, alongside the draft tools.
     async setMessageRead(ids, read) {

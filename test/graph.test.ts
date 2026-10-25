@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createGraph,
+  defaultMaxUploadBytes,
   defaultPageSize,
-  maxAttachmentBytes,
   maxFlagReasonChars,
   maxPageSize,
   messagesPath,
+  singleRequestAttachmentBytes,
+  uploadChunkBytes,
 } from "../src/core/graph.ts";
-import type { GraphClient, GraphRequest } from "../src/core/graph.ts";
+import type {
+  FetchLike,
+  GraphClient,
+  GraphRequest,
+  UploadSource,
+} from "../src/core/graph.ts";
 import { AuthRequiredError, noSessionMessage } from "../src/core/errors.ts";
 import { GraphError } from "@microsoft/microsoft-graph-client";
 import { captureLogs } from "./support/log-capture.ts";
@@ -101,12 +108,105 @@ function fakeClient(respond: (path: string) => unknown = responder) {
   return { client, requests, factory: () => client };
 }
 
-function graphFor(respond?: (path: string) => unknown) {
+function graphFor(
+  respond?: (path: string) => unknown,
+  options: { fetch?: FetchLike; maxUploadBytes?: number } = {},
+) {
   const fake = fakeClient(respond);
   return {
-    graph: createGraph({ token: async () => "token", client: fake.factory }),
+    graph: createGraph({
+      token: async () => "token",
+      client: fake.factory,
+      fetch: options.fetch,
+      maxUploadBytes: options.maxUploadBytes,
+    }),
     requests: fake.requests,
   };
+}
+
+/** One file of `bytes` bytes, as an upload source. */
+function fileSource(bytes: number, name = "big.bin"): UploadSource {
+  const buffer = Buffer.alloc(bytes, 0x61);
+  return {
+    name,
+    contentType: "application/octet-stream",
+    size: bytes,
+    read: async (offset, length) => buffer.subarray(offset, offset + length),
+  };
+}
+
+type ChunkAnswer = {
+  status: number;
+  body?: string;
+  location?: string;
+};
+
+/**
+ * A stub of Graph's upload session: it answers the session `POST` with a
+ * pre-authenticated URL of its own, then answers the chunk `PUT`s in order from
+ * `answers`, ending in the 201 that carries the attachment id.
+ *
+ * The token in that URL is the one a test wants kept out of the places it should
+ * not go, so it is a recognisable string rather than a plausible one.
+ */
+function uploadSession(
+  options: {
+    uploadUrl?: string;
+    expiresAt?: string;
+    answers?: ChunkAnswer[];
+  } = {},
+) {
+  const url =
+    options.uploadUrl ??
+    "https://outlook.office.com/api/v2.0/Users('u')/Messages('m')/AttachmentSessions('s')?authtoken=secret-session-token";
+  const puts: {
+    url: string;
+    headers: Record<string, string>;
+    body: Buffer;
+  }[] = [];
+  const respond = (path: string): unknown =>
+    path.endsWith("/attachments/createUploadSession")
+      ? {
+          uploadUrl: url,
+          expirationDateTime: options.expiresAt ?? "2999-01-01T00:00:00Z",
+          nextExpectedRanges: ["0-"],
+        }
+      : { id: "draft-1", isDraft: true };
+  const fetch: FetchLike = async (putUrl, init) => {
+    puts.push({ url: putUrl, headers: init.headers, body: init.body });
+    // Unscripted, the session behaves as Graph does: every range but the last is
+    // acknowledged with the next one expected, and the range that ends the file
+    // comes back 201 with the attachment's URL.
+    const answer: ChunkAnswer =
+      options.answers?.[puts.length - 1] ??
+      ((): ChunkAnswer => {
+        // exec()[0] is the whole match, so the ranges start at index 1: byte
+        // ranges here are `start-end/total`, and this answers with `end + 1`.
+        const [, , end, total] =
+          /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
+            init.headers["Content-Range"] ?? "",
+          ) ?? [];
+        return Number(end) + 1 === Number(total)
+          ? {
+              status: 201,
+              location:
+                "https://outlook.office.com/api/v2.0/Users('u')/Messages('m')/Attachments('att%2D1')",
+            }
+          : {
+              status: 200,
+              body: JSON.stringify({
+                nextExpectedRanges: [`${Number(end) + 1}`],
+              }),
+            };
+      })();
+    return {
+      status: answer.status,
+      header: (name) =>
+        name.toLowerCase() === "location" ? (answer.location ?? null) : null,
+      body: async () => answer.body ?? "",
+    };
+  };
+  return { url, respond, fetch, puts };
 }
 
 test("list messages requests the documented fields, newest first", async () => {
@@ -534,50 +634,303 @@ test("a missing session fails a flag batch once, not once per id", async () => {
   );
 });
 
-test("add_attachment posts a file attachment to the draft", async () => {
-  const { graph, requests } = graphFor(savedDraft);
-
-  await graph.addAttachment("a/b", {
-    name: "note.txt",
-    contentType: "text/plain",
-    contentBase64: Buffer.from("hello").toString("base64"),
+test("uploadAttachment posts a file under 3 MB as one attachment", async () => {
+  const session = uploadSession();
+  const { graph, requests } = graphFor(session.respond, {
+    fetch: session.fetch,
   });
 
-  const request = requests[0];
-  assert.equal(request.path, "/me/messages/a%2Fb/attachments");
-  assert.equal(request.verb, "post");
-  assert.deepEqual(request.body, {
+  const outcome = await graph.uploadAttachment("a/b", {
+    name: "note.txt",
+    contentType: "text/plain",
+    size: 5,
+    read: async () => Buffer.from("hello"),
+  });
+
+  assert.equal(outcome.attachment.transport, "single_request");
+  assert.equal(outcome.attachment.bytes, 5);
+  // The draft read on the way to the write comes back with it, so the answer can
+  // echo the message rather than the upload.
+  assert.equal(outcome.draft.id, "draft-1");
+  const request = requests.find((entry) => entry.verb === "post");
+  assert.equal(request?.path, "/me/messages/a%2Fb/attachments");
+  assert.deepEqual(request?.body, {
     "@odata.type": "#microsoft.graph.fileAttachment",
     name: "note.txt",
     contentType: "text/plain",
-    contentBase64: Buffer.from("hello").toString("base64"),
+    contentBase64: "aGVsbG8=",
   });
+  assert.deepEqual(
+    session.puts,
+    [],
+    "3 MB is not reached, so no session is opened",
+  );
 });
 
-test("an attachment at or over 3 MB is refused before any request", async () => {
-  const { graph, requests } = graphFor(savedDraft);
-  const attachment = (bytes: number) => ({
-    name: "big.bin",
-    contentType: "application/octet-stream",
-    contentBase64: Buffer.alloc(bytes, 0x61).toString("base64"),
+test("an attachment write reads its target first and refuses a message that is not a draft", async () => {
+  // `POST …/attachments` and `DELETE …/attachments/{id}` both work on a message
+  // that has already been sent, which is the one thing nothing here may rewrite.
+  const sent = () => ({ id: "m", isDraft: false });
+  const session = uploadSession();
+  const { graph, requests } = graphFor(sent, { fetch: session.fetch });
+
+  for (const write of [
+    () => graph.uploadAttachment("a/b", fileSource(5)),
+    () => graph.deleteAttachment("a/b", "attachment-1"),
+  ])
+    await assert.rejects(write, /is not a draft, so nothing was changed/);
+
+  assert.deepEqual(
+    requests.filter((entry) => entry.verb !== "get"),
+    [],
+    "a sent message was written to",
+  );
+  assert.deepEqual(session.puts, []);
+});
+
+test("a file that cannot fit, or has nothing in it, is refused before any request", async () => {
+  const { graph, requests } = graphFor(savedDraft, {
+    maxUploadBytes: 1024,
+    fetch: uploadSession().fetch,
   });
 
-  assert.throws(
-    () => graph.addAttachment("a/b", attachment(maxAttachmentBytes)),
+  await assert.rejects(
+    () => graph.uploadAttachment("a/b", fileSource(1025)),
     (error: unknown) => {
       assert.match(
         messageOf(error),
-        /big\.bin is 3145728 bytes and a single-request attachment must stay under 3145728 bytes \(3 MB\)/,
+        /big\.bin is 1025 bytes and the upload limit here is 1024 bytes \(OUTLOOK_MCP_MAX_UPLOAD_BYTES/,
       );
-      assert.match(messageOf(error), /upload session/);
+      assert.match(messageOf(error), /Graph caps at 157286400/);
       return true;
     },
   );
-  assert.deepEqual(requests, [], "an upload that must fail was not attempted");
+  await assert.rejects(
+    () => graph.uploadAttachment("a/b", fileSource(0)),
+    /has no bytes to attach/,
+  );
+  assert.deepEqual(requests, [], "a write that must fail was not attempted");
 
-  // Just under the ceiling still goes up.
-  await graph.addAttachment("a/b", attachment(maxAttachmentBytes - 1));
-  assert.equal(requests.length, 1);
+  // The default ceiling is the mailbox's, not Graph's, and is said in the error
+  // a caller gets when nobody set anything.
+  const defaults = graphFor(savedDraft);
+  await assert.rejects(
+    () =>
+      defaults.graph.uploadAttachment(
+        "a/b",
+        fileSource(defaultMaxUploadBytes + 1),
+      ),
+    new RegExp(`the upload limit here is ${defaultMaxUploadBytes} bytes`),
+  );
+});
+
+test("a file over 3 MB goes up an upload session in ordered ranges", async () => {
+  const session = uploadSession();
+  const { graph, requests } = graphFor(session.respond, {
+    fetch: session.fetch,
+  });
+  const size = singleRequestAttachmentBytes + 5_000_000;
+
+  const outcome = await graph.uploadAttachment("a/b", fileSource(size));
+
+  assert.equal(outcome.attachment.transport, "upload_session");
+  assert.equal(
+    outcome.attachment.id,
+    "att-1",
+    "read out of the Location header",
+  );
+  assert.equal(outcome.attachment.bytes, size);
+  const opened = requests.find((entry) => entry.verb === "post");
+  assert.equal(
+    opened?.path,
+    "/me/messages/a%2Fb/attachments/createUploadSession",
+  );
+  assert.deepEqual(opened?.body, {
+    AttachmentItem: {
+      attachmentType: "file",
+      name: "big.bin",
+      contentType: "application/octet-stream",
+      size,
+    },
+  });
+
+  // The chunk size is the one Graph asks for: under the 4 MB it names, and on
+  // the 320 KiB alignment its upload sessions are built on.
+  assert.ok(
+    uploadChunkBytes < 4 * 1024 * 1024,
+    "a chunk over the 4 MB Graph asks for",
+  );
+  assert.equal(
+    uploadChunkBytes % (320 * 1024),
+    0,
+    "a chunk off the 320 KiB alignment",
+  );
+
+  // Contiguous ranges, in order, all of that size until the tail, with the last
+  // byte of the file in the last of them.
+  let expected = 0;
+  for (const put of session.puts) {
+    const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
+      put.headers["Content-Range"] ?? "",
+    );
+    assert.ok(
+      range,
+      `no Content-Range on a chunk: ${put.headers["Content-Range"]}`,
+    );
+    const [start, end, total] = [
+      Number(range[1]),
+      Number(range[2]),
+      Number(range[3]),
+    ];
+    assert.equal(start, expected, "ranges must follow one another");
+    assert.equal(total, size);
+    assert.equal(end, start + put.body.byteLength - 1);
+    if (end + 1 < size)
+      assert.equal(
+        put.body.byteLength,
+        uploadChunkBytes,
+        "a chunk that is not the module's own size",
+      );
+    expected = end + 1;
+  }
+  assert.equal(expected, size, "the upload stopped short of the last byte");
+
+  // The session URL is pre-authenticated by Graph, so nothing of the user's own
+  // token belongs on it - and the byte ranges are what they were asked for.
+  for (const put of session.puts) {
+    assert.equal(put.headers["Authorization"], undefined);
+    assert.equal(put.headers["Content-Type"], "application/octet-stream");
+    assert.equal(put.url, session.url);
+  }
+  assert.ok(session.puts.length > 1, "a file this size is more than one chunk");
+});
+
+test("an upload resumes where the session says, and stops rather than repeat itself", async () => {
+  const forward = uploadSession({
+    answers: [
+      { status: 200, body: JSON.stringify({ nextExpectedRanges: ["7680"] }) },
+    ],
+  });
+  const resumed = graphFor(forward.respond, { fetch: forward.fetch });
+  await resumed.graph.uploadAttachment(
+    "a/b",
+    fileSource(singleRequestAttachmentBytes + 10),
+  );
+  assert.match(
+    forward.puts[1].headers["Content-Range"] ?? "",
+    /^bytes 7680-/,
+    "the server's next range was ignored",
+  );
+
+  const back = uploadSession({
+    answers: [
+      { status: 200, body: JSON.stringify({ nextExpectedRanges: ["0"] }) },
+    ],
+  });
+  const stuck = graphFor(back.respond, { fetch: back.fetch });
+  await assert.rejects(
+    () =>
+      stuck.graph.uploadAttachment(
+        "a/b",
+        fileSource(singleRequestAttachmentBytes + 10),
+      ),
+    /asked for byte 0 of .*after accepting byte/,
+  );
+  assert.equal(
+    back.puts.length,
+    1,
+    "a loop that would not advance is cut short",
+  );
+});
+
+test("a refused chunk says why, without carrying the session credential with it", async () => {
+  // Graph's error text quotes the URL it refused, so the credential is exactly
+  // what comes back in the body of a failed chunk.
+  const url =
+    "https://outlook.office.com/api/v2.0/Users('u')/Messages('m')/AttachmentSessions('s')?authtoken=secret-session-token";
+  const session = uploadSession({
+    uploadUrl: url,
+    answers: [
+      {
+        status: 413,
+        body: `{"error":{"message":"Attachment size exceeds the allowable limit for ${url}"}}`,
+      },
+    ],
+  });
+  const { graph } = graphFor(session.respond, { fetch: session.fetch });
+  await assert.rejects(
+    () =>
+      graph.uploadAttachment(
+        "a/b",
+        fileSource(singleRequestAttachmentBytes + 10),
+      ),
+    (error: unknown) => {
+      assert.match(messageOf(error), /with HTTP 413/);
+      assert.match(messageOf(error), /authtoken=\[redacted\]/);
+      assert.equal(messageOf(error).includes("secret-session-token"), false);
+      assert.match(messageOf(error), /Nothing was attached/);
+      return true;
+    },
+  );
+});
+
+test("an upload session that is expired, or points somewhere unexpected, sends no bytes", async () => {
+  const expired = uploadSession({ expiresAt: "2000-01-01T00:00:00Z" });
+  const past = graphFor(expired.respond, { fetch: expired.fetch });
+  await assert.rejects(
+    () =>
+      past.graph.uploadAttachment(
+        "a/b",
+        fileSource(singleRequestAttachmentBytes + 10),
+      ),
+    /expired with .* still to send/,
+  );
+  assert.deepEqual(expired.puts, []);
+
+  for (const uploadUrl of [
+    "http://outlook.office.com/api/AttachmentSessions('s')?authtoken=t",
+    "https://outlook.office.com:8443/api/AttachmentSessions('s')?authtoken=t",
+    "https://someone@outlook.office.com/api/AttachmentSessions('s')",
+    "not a url",
+    "",
+  ]) {
+    const session = uploadSession({ uploadUrl });
+    const { graph } = graphFor(session.respond, { fetch: session.fetch });
+    await assert.rejects(
+      () =>
+        graph.uploadAttachment(
+          "a/b",
+          fileSource(singleRequestAttachmentBytes + 10),
+        ),
+      /will not send bytes to/,
+      `${uploadUrl} was accepted`,
+    );
+    assert.deepEqual(session.puts, [], `${uploadUrl} was sent to`);
+  }
+});
+
+test("the session URL never reaches a log line, not even at debug", async () => {
+  const capture = captureLogs({ level: "debug" });
+  const session = uploadSession();
+  const { graph } = graphFor(session.respond, { fetch: session.fetch });
+  await graph.uploadAttachment(
+    "a/b",
+    fileSource(singleRequestAttachmentBytes + 10),
+  );
+  capture.restore();
+  assert.equal(capture.text().includes("secret-session-token"), false);
+  assert.equal(capture.text().includes("AttachmentSessions"), false);
+  assert.match(capture.text(), /attachment chunk uploaded/);
+});
+
+test("delete_attachment deletes only the one attachment of a draft", async () => {
+  const { graph, requests } = graphFor(savedDraft);
+
+  const draft = await graph.deleteAttachment("a/b", "att/1");
+
+  assert.equal(draft.id, "draft-1");
+  assert.equal(requests[1].path, "/me/messages/a%2Fb/attachments/att%2F1");
+  assert.equal(requests[1].verb, "delete");
 });
 
 test("every Graph call leaves one debug line, and no line at the default level", async () => {

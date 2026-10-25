@@ -157,6 +157,7 @@ test("silence is a level, and it writes nothing", () => {
 
 test("a value that must never be logged is gone from both formats", () => {
   const secret = "EwBkA1q8jt6Ctoken-material";
+  const sessionToken = "secret-session-token";
   for (const format of ["text", "json"] as const) {
     const out = captureLogs({ level: "debug", format });
     try {
@@ -167,10 +168,18 @@ test("a value that must never be logged is gone from both formats", () => {
         authorization: `Bearer ${secret}`,
         contentBase64: "c2VjcmV0IG1haWw=",
         body: "the whole message",
+        // An upload session URL is token material: the bearer that carries the
+        // bytes to Outlook is in its query string.
+        uploadUrl: `https://outlook.office.com/AttachmentSessions('s')?authtoken=${sessionToken}`,
+        authtoken: sessionToken,
         nested: { untouched: true },
       });
       const line = out.text();
       assert.ok(!line.includes(secret), `${format} leaked the token`);
+      assert.ok(
+        !line.includes(sessionToken),
+        `${format} leaked an upload session credential`,
+      );
       assert.ok(!line.includes("c2VjcmV0IG1haWw="), `${format} leaked content`);
       assert.ok(!line.includes("the whole message"), `${format} leaked a body`);
       // The line is still useful: what happened and where it happened survive.
@@ -205,6 +214,8 @@ test("tool arguments read as what was asked, not as what the mailbox holds", () 
       to: ["ana@example.com", "bob@example.com"],
       body: "the message text",
       contentBase64: "c2VjcmV0",
+      serverPath: "downloads/quote.pdf",
+      fromAttachment: { messageId: "AAMkAGI2", attachmentId: "AAMkAGI3" },
       folder: "inbox",
       unread: true,
       limit: 25,
@@ -218,6 +229,10 @@ test("tool arguments read as what was asked, not as what the mailbox holds", () 
     toCount: 2,
     bodyChars: 16,
     contentBase64Chars: 8,
+    // Where a file on this machine sits is the user's business, and the path came
+    // from a model; a nested object is named, not unpacked.
+    serverPathChars: 19,
+    fromAttachmentPresent: true,
     folder: "inbox",
     unread: true,
     limit: 25,

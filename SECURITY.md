@@ -67,15 +67,15 @@ No tool, code path, or flag can transmit mail:
   that the scan itself distinguishes Graph's `createReply`/`createForward` draft
   actions from the sending ones.
 
-The write surface is six draft operations plus one attachment upload —
-`create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`,
-`delete_draft`, `add_attachment`, with `list_drafts` to read them — and two flag
-operations, `mark_read` and `mark_unread`, which send one `PATCH` of `isRead` per
-id and touch no message content. Guardrails around it:
+The write surface is seven draft operations — `create_draft`,
+`create_reply_draft`, `create_forward_draft`, `update_draft`, `delete_draft`,
+`add_attachment`, `remove_attachment` — with `list_drafts` to read them, and two
+flag operations, `mark_read` and `mark_unread`, which send one `PATCH` of
+`isRead` per id and touch no message content. Guardrails around it:
 
 - Every draft tool is annotated `readOnlyHint: false`, `idempotentHint: false`,
-  so conforming clients ask the human first. `logout` and `delete_draft` are
-  marked `destructiveHint: true`. The flag tools are `readOnlyHint: false` too,
+  so conforming clients ask the human first. `logout`, `delete_draft` and
+  `remove_attachment` are marked `destructiveHint: true`. The flag tools are `readOnlyHint: false` too,
   with `idempotentHint: true`: flagging a message that is already read changes
   nothing, which is what makes a retry safe.
 - **Recipients are never inferred.** Tools accept explicit addresses and no tool
@@ -97,7 +97,7 @@ id and touch no message content. Guardrails around it:
 | `~/.outlook-mcp/` (`OUTLOOK_MCP_HOME`) | `0700`                  | the cache directory                                               |
 | `~/.outlook-mcp/msal-cache.json`       | `0600`                  | the refreshable token cache                                       |
 | `~/.outlook-mcp/state/login.json`      | dir `0700`, file `0600` | sign-in state: URL, user code, expiry, last error. Never a token. |
-| `$TMPDIR/outlook-mcp`                  | `0700`                  | downloaded attachments                                            |
+| `$TMPDIR/outlook-mcp`                  | `0700`                  | downloaded attachments, read back by `add_attachment serverPath`  |
 
 The cache is the sensitive file and it is written atomically: a temp file in the
 same directory at `0600`, then a `rename`. Several agents can share one cache,
@@ -136,10 +136,29 @@ Two directions, both bounded:
   A requested `dir` requires this mode and is checked as both a path and a real
   path, so neither traversal nor a symlink escapes it. Sender filenames are
   reduced to one safe leaf for both resource links and disk writes.
-- **Upload** (`add_attachment`): a **hard 3 MB cap** on the decoded file, checked
-  before any request, with an actionable error and no partial write. Graph needs
-  an upload session between 3 and 150 MB and this server has none, so the limit
-  is the limit rather than a silent truncation.
+- **Upload** (`add_attachment`): capped by `OUTLOOK_MCP_MAX_UPLOAD_BYTES`,
+  **35 MiB** by default and 150 MiB at most — Graph's own ceiling. The default is
+  the mailbox's limit rather than Graph's because a mailbox refuses an oversized
+  message at Send, long after an upload has succeeded. The size is settled before
+  the first request, so a file that cannot fit costs nothing, and Graph
+  materialises an upload-session attachment only at its last byte, so a failed
+  upload leaves the draft unchanged rather than half a file.
+- **Where uploads read** (`serverPath`): a file inside `OUTLOOK_MCP_ATTACHMENT_DIR`
+  and nothing else. This is the one place a string from a model selects a file to
+  **read**, so it is checked like the download guard it shares a module with:
+  resolved inside the directory, absolute paths and traversal refused, the real
+  path rechecked, a symlink refused before the open and again by `O_NOFOLLOW`, and
+  only a regular file accepted — so `~/.ssh/id_rsa` is not a thing a draft can be
+  told to carry.
+- **The upload session URL is a credential.** Graph pre-authenticates it with a
+  bearer token in its query string, so the chunk `PUT` must carry no
+  `Authorization` header (the SDK would add one, which is why the chunk goes out
+  over `fetch`), the URL must be https with no port and no credentials of its
+  own, it never reaches a log line, and it is struck out of the one Graph error
+  body this server hands back to a caller.
+- **Attachments are for drafts.** Both attachment tools read the target first and
+  refuse a message Graph reports `isDraft: false`, because Graph would happily
+  add a file to a sent message — or take one off it.
 
 ## Session handling
 
@@ -163,7 +182,8 @@ A log line is a copy of a mailbox, and stderr is not owner-only the way
 pasted terminal are all places mail can end up without anyone deciding that. So:
 
 - **Never written, at any level:** an access or refresh token, an `Authorization`
-  header, a message body, or attachment content. Those keys are struck out of a
+  header, an upload session URL (a bearer token sitting in its query string), a
+  message body, or attachment content. Those keys are struck out of a
   record before it is serialised, and the human format is rendered from that same
   serialised record — so there is no path that bypasses it. A test asserts it.
 - **`debug` only, because somebody asked for it:** message and attachment ids, a

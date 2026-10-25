@@ -34,16 +34,16 @@ repository's `docs/clients.md` is the matrix for every client.
 
 ## Prefer the MCP tools
 
-| Tool                                                                                                                          | Use                                                           |
-| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `list_emails`                                                                                                                 | One folder, newest first, `folder`/`unread`/`limit`/`cursor`  |
-| `search_emails`                                                                                                               | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`     |
-| `get_email`                                                                                                                   | One message, full plain-text body                             |
-| `list_attachments` / `download_attachment`                                                                                    | Metadata first; read the returned session-scoped MCP resource |
-| `auth_status`                                                                                                                 | Session, authority, mode, scopes, last sign-in error          |
-| `login` / `logout`                                                                                                            | Start sign-in without waiting / delete the session            |
-| `mark_read` / `mark_unread`                                                                                                   | Flip the read flag on 1-100 ids, no content touched           |
-| `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment` | Write an unsent message                                       |
+| Tool                                                                                                                                               | Use                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `list_emails`                                                                                                                                      | One folder, newest first, `folder`/`unread`/`limit`/`cursor`  |
+| `search_emails`                                                                                                                                    | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`     |
+| `get_email`                                                                                                                                        | One message, full plain-text body                             |
+| `list_attachments` / `download_attachment`                                                                                                         | Metadata first; read the returned session-scoped MCP resource |
+| `auth_status`                                                                                                                                      | Session, authority, mode, scopes, last sign-in error          |
+| `login` / `logout`                                                                                                                                 | Start sign-in without waiting / delete the session            |
+| `mark_read` / `mark_unread`                                                                                                                        | Flip the read flag on 1-100 ids, no content touched           |
+| `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment`, `remove_attachment` | Write an unsent message                                       |
 
 List results carry `items` and `nextCursor`: pass `nextCursor` back as `cursor`
 for the next page. Bodies only ever come from `get_email`, and attachment
@@ -59,6 +59,18 @@ Your MCP client must support resource reads and materialization. Use
 `delivery: "server_file"` only when the server filesystem is actually accessible;
 `dir` requires that explicit mode. `encoding: "base64"` returns inline content up
 to 64 KiB; oversized requests fail instead of silently falling back to a path.
+
+`add_attachment` takes exactly one source, and two of the three keep the file out
+of the conversation: `fromAttachment` copies an attachment this mailbox already
+has, `serverPath` reads a file inside the server's attachment directory (which is
+where `delivery: "server_file"` leaves one), and `contentBase64` — the one that
+puts every byte in front of a model — is for a file you already hold and nothing
+else. Files under 3 MB go up in one request and larger ones by upload session, up
+to `OUTLOOK_MCP_MAX_UPLOAD_BYTES` (35 MiB by default); nothing is attached unless
+every byte was accepted, so a failed call changes nothing. Both attachment tools
+refuse a message that is not a draft, every answer lists the draft's attachments
+with their ids, and `remove_attachment` is the way back — destructive, with no
+undo.
 
 The flag tools take ids, not a query, and return every id with the flag Graph
 now says it carries — an id Graph refused sits in `failed` while the rest still

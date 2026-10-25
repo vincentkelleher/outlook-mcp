@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultMaxUploadBytes, maxGraphUploadBytes } from "./graph.ts";
 import { logFormatFor, logLevelFor } from "./log.ts";
 import type { LogFormat, LogLevel } from "./log.ts";
 
@@ -14,6 +15,14 @@ export type Config = {
   attachmentDir: string;
   /** Maximum decoded attachment size for MCP downloads and resources. */
   maxAttachmentBytes: number;
+  /**
+   * Maximum file this server will put on a draft, by either route. Deliberately
+   * its own knob and not `maxAttachmentBytes`: that one bounds what a session
+   * will pull down, this one bounds what a mailbox can still be asked to send,
+   * and an operator may want them to disagree. Graph accepts no more than
+   * `maxGraphUploadBytes` whatever is set here.
+   */
+  maxUploadBytes: number;
   readonly: boolean;
   /** Interface `serve --http` binds: a hostname or an address. */
   httpHost: string;
@@ -171,6 +180,15 @@ export function loadConfig(env: Env = loadEnvFile()): Config {
       env.OUTLOOK_MCP_MAX_ATTACHMENT_BYTES,
       20 * 1024 * 1024,
       Number.MAX_SAFE_INTEGER,
+    ),
+    // A setting above what Graph takes is a mistake about what Graph does, not
+    // a wider allowance, so the ceiling is the maximum rather than a silent
+    // clamp: `OUTLOOK_MCP_MAX_UPLOAD_BYTES=200MB` should fail at startup.
+    maxUploadBytes: numberFor(
+      "OUTLOOK_MCP_MAX_UPLOAD_BYTES",
+      env.OUTLOOK_MCP_MAX_UPLOAD_BYTES,
+      defaultMaxUploadBytes,
+      maxGraphUploadBytes,
     ),
     readonly: !["", "0", "false"].includes(
       (env.OUTLOOK_MCP_READONLY ?? "").toLowerCase(),

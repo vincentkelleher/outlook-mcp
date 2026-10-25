@@ -15,7 +15,7 @@ import type { Admission } from "../src/core/http.ts";
 import { startHttp } from "../src/mcp.ts";
 import { draftToolNames, flagToolNames } from "../src/tools.ts";
 import type { ToolDeps } from "../src/tools.ts";
-import type { Graph } from "../src/core/graph.ts";
+import type { Graph, UploadSource } from "../src/core/graph.ts";
 import type { Config } from "../src/core/config.ts";
 
 const clientId = "00000000-0000-0000-0000-000000000000";
@@ -75,8 +75,19 @@ function fakeDeps(config: Config): ToolDeps {
       return { items: [] };
     },
     async deleteDraft() {},
-    async addAttachment() {
-      return { id: "draft-1" };
+    async uploadAttachment(messageId: string, source: UploadSource) {
+      return {
+        draft: { id: messageId, subject: "Weekly report" },
+        attachment: {
+          name: source.name,
+          contentType: source.contentType,
+          bytes: source.size,
+          transport: "single_request",
+        },
+      };
+    },
+    async deleteAttachment(messageId: string) {
+      return { id: messageId, subject: "Weekly report" };
     },
   } as unknown as Graph;
   return {
