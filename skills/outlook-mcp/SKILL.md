@@ -12,42 +12,72 @@ session, so sign in once.
 
 ## Set up once
 
-Needs a Microsoft Entra app registration: see
-[references/setup.md](references/setup.md). Put its client id where the process
-can see it:
+Node 22 or newer (`node --version`), and git.
+
+**Ask for the client id; do not try to make one.** The Microsoft Entra app
+registration behind it happens in a browser and is a person's job:
+[references/setup.md](references/setup.md) is the one copy of those steps. Request
+the Application (client) ID, wait for it, and put it where the process can see it:
 
 ```bash
 export OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id
 ```
 
-Install from a checkout, which is the only supported path:
+Install the server from a checkout, which is the only supported path:
 
 ```bash
 git clone https://github.com/vincentkelleher/outlook-mcp
 cd outlook-mcp && npm ci && npm run build
 ```
 
+If these instructions arrived as an installed skill, that copy carried `SKILL.md`
+and `references/` and no `dist/`: this build is what makes the commands below
+real. A skill and a server installed at different times disagree quietly, and
+`node dist/index.js --version` names which release you are actually talking to.
+
 `node dist/index.js config <client> --write` then registers the server with
 Claude Code, Claude Desktop, Codex, VS Code, Cursor, Gemini CLI or OpenCode
-without hand-editing JSON or TOML. Pi is configured with `pi mcp add`; the
-repository's `docs/clients.md` is the matrix for every client.
+without hand-editing JSON or TOML — and `config <client>` with no `--write` just
+prints the entry, which is the safest thing to do when you are not sure of the
+client's file format. Pi is configured with `pi mcp add`; the per-client matrix,
+including what is unverified, is `docs/clients.md` in the repository at
+<https://github.com/vincentkelleher/outlook-mcp/blob/main/docs/clients.md>.
+
+## Check it worked
+
+```bash
+node dist/index.js auth status
+node dist/index.js emails list --limit 3
+```
+
+`auth status` answers without a session, so it is the first call, not the last:
+`signedIn`, `account`, `readonly`, `scopes`, `cachePath`, `lastLoginError`. A
+first call that says `No Outlook session` is the sign-in below, not a broken
+install.
 
 ## Prefer the MCP tools
 
-| Tool                                                                                                                                               | Use                                                           |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `list_emails`                                                                                                                                      | One folder, newest first, `folder`/`unread`/`limit`/`cursor`  |
-| `search_emails`                                                                                                                                    | Whole mailbox, Graph syntax: `from:`, `subject:`, `body:`     |
-| `get_email`                                                                                                                                        | One message, full plain-text body                             |
-| `list_attachments` / `download_attachment`                                                                                                         | Metadata first; read the returned session-scoped MCP resource |
-| `auth_status`                                                                                                                                      | Session, authority, mode, scopes, last sign-in error          |
-| `login` / `logout`                                                                                                                                 | Start sign-in without waiting / delete the session            |
-| `mark_read` / `mark_unread`                                                                                                                        | Flip the read flag on 1-100 ids, no content touched           |
-| `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft`, `add_attachment`, `remove_attachment` | Write an unsent message                                       |
+Pick by intent. `tools/list` is the parameter truth for the build you are
+connected to — arguments, limits, return shape, annotations — so read it there
+rather than trusting anything written here about a schema:
 
-List results carry `items` and `nextCursor`: pass `nextCursor` back as `cursor`
-for the next page. Bodies only ever come from `get_email`, and attachment
-content never comes back inline unless asked for.
+| Intent                                                           | Tool                                                                                                        |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Newest mail in one folder                                        | `list_emails` — `folder`, `unread`, `limit`, `cursor`                                                       |
+| Anything matching, across the mailbox                            | `search_emails` — Graph syntax: `from:`, `subject:`, `body:`                                                |
+| One message, body in full                                        | `get_email`                                                                                                 |
+| What is attached, then the file itself                           | `list_attachments`, then `download_attachment`                                                              |
+| Is there a session; which mode, scopes, last error               | `auth_status`                                                                                               |
+| Start sign-in without waiting, then forget it                    | `login`, `logout`                                                                                           |
+| Move mail out of, or back into, the unread count                 | `mark_read`, `mark_unread`                                                                                  |
+| An unsent message: new, a reply, a forward, edited, listed, gone | `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `delete_draft` |
+| A file on a draft, or back off it                                | `add_attachment`, `remove_attachment`                                                                       |
+
+Three rules the schema does not shout: bodies only ever come from `get_email`;
+list and search results carry `items` and `nextCursor`, and `nextCursor` goes back
+as `cursor` for the next page; and the write tools are simply absent when the
+server runs read-only, which `auth_status` says outright with `readonly` and
+`scopes`.
 
 `download_attachment` returns a `resource_link` by default. Use `resources/read`
 with its URI to retrieve a base64 blob, then decode/save it in your own workspace
@@ -87,6 +117,7 @@ node dist/index.js emails get "message-id"
 node dist/index.js emails attachments "message-id"
 node dist/index.js emails read "message-id" "another-id"
 node dist/index.js emails unread "message-id"
+node dist/index.js auth status
 node dist/index.js logout
 ```
 
@@ -111,20 +142,34 @@ here blocks on it. Through MCP:
 3. Poll `auth_status` until `signedIn` is true, then retry the call that failed.
    `lastLoginError` says why a flow died.
 
-From a shell, the same background flow:
+From a shell, the same flow and the same poll:
 
 ```bash
-node dist/index.js login --background --json
+node dist/index.js login --background --json  # the URL and code now, the flow in the background
+node dist/index.js auth status                # poll every few seconds until signedIn
 ```
 
-Show the `verificationUri` and `userCode` it prints. There is no status command
-in the CLI, so once the user says they approved, run the command you actually
-needed: while the flow is unfinished it still reports `No Outlook session`, and
-running `login --background --json` again then says `authorized` instead of
-starting a second sign-in.
+Show the `verificationUri` and `userCode`. `auth status` is the CLI half of
+`auth_status` and carries the same fields, including `signInPending` with the URL
+and code of a flow **another client** started — which is how you recover a code
+you were never shown instead of starting a competing sign-in. Poll every few
+seconds rather than in a tight loop: confirming a session can mean asking
+Microsoft for a token. Running `login --background --json` again while a flow is
+live says so rather than issuing a second code.
 
 The refreshable session lives at `~/.outlook-mcp/msal-cache.json`, directory
 `0700` and file `0600`, and later calls refresh it silently.
+
+## When it fails
+
+[references/troubleshooting.md](references/troubleshooting.md) is keyed on the
+sentence you are looking at — session, client configuration, HTTP and the
+container, attachments and drafts. The full environment table lives in the
+repository README at
+<https://github.com/vincentkelleher/outlook-mcp#configuration>; the four that
+change behaviour are `OUTLOOK_OAUTH_TENANT` (`organizations` or `common` for a
+work or school mailbox), `OUTLOOK_MCP_READONLY`, `OUTLOOK_MCP_HOME` and
+`OUTLOOK_MCP_MAX_UPLOAD_BYTES`.
 
 ## Drafting rules
 

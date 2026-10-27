@@ -1,10 +1,16 @@
 # Registering the Microsoft Entra app
 
-Agent-facing, one time per user or machine. This produces an
-`OUTLOOK_OAUTH_CLIENT_ID`, which is the only value the server cannot work
-without. The full list of environment variables lives in the repository
-README; the three that depend on this registration are the client id, the
-tenant, and the read-only switch.
+**Steps 1 to 3 are a person's job, in a browser.** An agent cannot open the Entra
+portal, cannot click **Yes** on public client flows and cannot grant permissions.
+Read this to your human, ask for the **Application (client) ID**, and wait for it:
+improvising a client id, or signing in on someone's behalf, is worse than stopping.
+Step 4 onward is yours.
+
+One registration per user or machine. It produces the
+`OUTLOOK_OAUTH_CLIENT_ID`, the only value the server cannot work without. The
+three settings that depend on it are the client id, the tenant, and the read-only
+switch; the full environment table is in the repository README at
+<https://github.com/vincentkelleher/outlook-mcp#configuration>.
 
 ## 1. Create the app
 
@@ -76,7 +82,8 @@ For an agent that must not block, use the background form and poll, as
 `../SKILL.md` describes:
 
 ```bash
-node dist/index.js login --background --json
+node dist/index.js login --background --json  # prints the URL and code, returns now
+node dist/index.js auth status                # signedIn, and the live code if another client owns it
 ```
 
 The session is cached at `~/.outlook-mcp/msal-cache.json` and shared by the
@@ -91,9 +98,12 @@ decisions are made:
 ```bash
 docker run -d --name outlook-mcp -p 127.0.0.1:3939:3939 \
   -v outlook-mcp-home:/data -e OUTLOOK_OAUTH_CLIENT_ID=<the client ID> \
-  ghcr.io/vincentkelleher/outlook-mcp:0.1.0
+  ghcr.io/vincentkelleher/outlook-mcp:latest
 docker exec outlook-mcp outlook login
 ```
+
+Pin `X.Y.Z` where the run has to mean the same server twice; `latest` is here so
+that these words cannot go stale.
 
 `OUTLOOK_OAUTH_CLIENT_ID` and `OUTLOOK_MCP_READONLY` are set on the container, and
 the session lives in the volume instead of `~/.outlook-mcp`. The client points at
@@ -120,6 +130,10 @@ addresses a call named. `OUTLOOK_LOG_FORMAT=json` is for a log collector.
 ```bash
 OUTLOOK_LOG_LEVEL=debug node dist/index.js emails list --limit 3 2>~/outlook.log
 ```
+
+What the failure **means** — the sentence, not the level — is in
+[troubleshooting.md](troubleshooting.md): session and consent, client
+configuration, HTTP and the container, attachments and drafts.
 
 Nothing that looks like mail ever travels in a line: no token, no body, no
 attachment content, at any level. A sender address is masked and a message id

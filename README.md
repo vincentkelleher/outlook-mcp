@@ -2,7 +2,7 @@
 
 # Outlook MCP
 
-![](./doc/banner.png)
+![](./docs/img/banner.png)
 
 **A small, secure bridge between an Outlook mailbox and an AI agent.**
 
@@ -16,6 +16,24 @@ refresh, and JSON that is easy for people and agents to use.
 > This skill only covers the Outlook email tasks that match my personal needs,
 > and it deliberately stops short of sending. This can evolve with time, don't
 > hesitate to contribute 🤝
+
+## Contents
+
+- [What it is](#what-it-is)
+- [Which way to run it](#which-way-to-run-it)
+- [Install](#install)
+- [For agents](#for-agents)
+- [Run it in a container](#run-it-in-a-container)
+- [Sign in](#sign-in)
+- [The tools](#the-tools)
+- [From a shell](#from-a-shell)
+- [Configuration](#configuration)
+- [When something is wrong](#when-something-is-wrong)
+- [Security](#security)
+- [Removing it](#removing-it)
+- [Development](#development)
+- [Releases](#releases)
+- [License](#license)
 
 ## What it is
 
@@ -34,6 +52,23 @@ refresh, and JSON that is easy for people and agents to use.
   surfaces, so what a client is told and what the code can do cannot drift.
 - **Read, search, and draft. Never send.** No tool, endpoint or flag in this
   repository transmits mail. See [SECURITY.md](SECURITY.md).
+
+## Which way to run it
+
+| Situation                                                                                               | Run                                          | Go to                                           |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------- |
+| Your client launches a stdio MCP server — Claude Code, Codex, VS Code, Cursor, Gemini CLI, OpenCode, Pi | `node dist/index.js`                         | [Install](#install)                             |
+| One long-lived server, or a client that takes a URL                                                     | `serve --http`, which is what the image runs | [Run it in a container](#run-it-in-a-container) |
+| No MCP at all: a shell, a cron job, a harness of your own                                               | `node dist/index.js emails list`             | [From a shell](#from-a-shell)                   |
+
+Three prerequisites, and the third is not yours to satisfy:
+
+- **Node 22 or newer** — `node --version`. `engines.node` says it too, and
+  `engines` is a warning rather than a guard. 22.18+ additionally lets
+  `node src/index.ts` run the sources without building first.
+- **git**, for the clone.
+- **An Application (client) ID** from a Microsoft Entra app registration — a
+  browser, and a person, which is why it is asked for rather than built.
 
 ## Install
 
@@ -67,6 +102,50 @@ Clients: `pi`, `claude-code`, `claude-desktop`, `codex`, `vscode`, `cursor`,
 the timeout units and the honest list of what is unverified live in
 [docs/clients.md](docs/clients.md).
 
+## For agents
+
+Two installs, and only one of them is the code:
+
+```bash
+# 1. the instructions: SKILL.md and its two references
+npx skills add vincentkelleher/outlook-mcp --skill outlook-mcp -a <client> -g -y
+
+# 2. the server itself, wherever your client will launch it from
+git clone https://github.com/vincentkelleher/outlook-mcp
+cd outlook-mcp && npm ci && npm run build
+```
+
+`-a` names your client and `-y` is what stops the installer waiting for a
+keyboard; without them `npx skills add` opens a picker and blocks, which looks
+exactly like a hang. `--list` shows what a repository carries, `--all` takes
+every skill and every detected client. The skills CLI needs Node 22.20+ and
+copies the skill directory **only** — no `dist/` — so step 2 has to happen
+before the `node dist/index.js …` that the skill tells you to run. No skills
+CLI? The equivalent is a copy:
+`cp -r outlook-mcp/skills/outlook-mcp ~/.claude/skills/`.
+
+Then, in this order:
+
+1. **The app registration is a person's job.** It happens in the Entra portal in
+   a browser. You cannot do it and you must not invent a client id: ask for the
+   Application (client) ID and stop until you have it.
+2. **Register the server** with `node dist/index.js config <client>`, which
+   prints the snippet with this checkout's absolute path resolved, or
+   `--write` to merge it into that client's own file.
+3. **Sign in without blocking**: the `login` tool, or
+   `node dist/index.js login --background --json`. Show the `verificationUri`
+   and the `userCode` it prints, then poll `auth status` (CLI) or `auth_status`
+   (tool) until `signedIn`. Never start a second flow while one is live.
+4. **Check it before you promise it**: `node dist/index.js auth status`, then
+   `node dist/index.js emails list --limit 3`. `--version` names the release,
+   which is how you tell a stale skill from a stale server.
+
+Which tool answers which intent, pagination, attachments, the drafting rules and
+the exact failure sentences are in
+[skills/outlook-mcp/SKILL.md](skills/outlook-mcp/SKILL.md) and
+[references/troubleshooting.md](skills/outlook-mcp/references/troubleshooting.md).
+Nothing here can send mail: a draft gets written, a person sends it.
+
 ## Run it in a container
 
 The image runs the server over Streamable HTTP on port 3939 and keeps nothing on
@@ -79,7 +158,7 @@ docker run -d --name outlook-mcp \
   -p 127.0.0.1:3939:3939 \
   -v outlook-mcp-home:/data \
   -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
-  ghcr.io/vincentkelleher/outlook-mcp:0.1.0
+  ghcr.io/vincentkelleher/outlook-mcp:latest
 
 docker logs outlook-mcp
 # Outlook MCP serving on http://127.0.0.1:3939/mcp
@@ -120,6 +199,10 @@ Four things about that command line are important:
 - **Nothing on that port authenticates.** It is meant for your own machine.
   `GET /health` answers without touching Microsoft, so `docker ps` can report on
   it; `docker stop` takes it down in well under a second.
+
+`latest` is what the docs use so they cannot go stale; pin `X.Y.Z` where a run
+has to mean the same server twice. `node dist/index.js config docker` prints the
+run command at the version of the code you have, not of these words.
 
 Build it yourself with `docker build -t outlook-mcp .` — the same Dockerfile CI
 publishes from. To use the image over stdio instead, drop `--http`:
@@ -174,6 +257,9 @@ mode.
 | `delete_draft`         | Removes a draft (marked destructive)                                       |
 | `add_attachment`       | Puts a file on a draft: base64, a server file, or a copy of a received one |
 | `remove_attachment`    | Takes one file back off a draft (marked destructive)                       |
+
+This table is the registry's own: `test/docs.test.ts` fails a build when a tool
+appears in `src/tools.ts` and not here, or the other way round.
 
 List results carry `items` and, when there is more to read, `nextCursor` — pass
 it back as `cursor`. Resources are published too: `outlook://folders`,
@@ -278,8 +364,15 @@ node dist/index.js emails get "message-id"
 node dist/index.js emails attachments "message-id"
 node dist/index.js emails read "message-id" "another-id"
 node dist/index.js emails unread "message-id"
+node dist/index.js auth status
+node dist/index.js --version
 node dist/index.js config --help
 ```
+
+`auth status` is the CLI half of the `auth_status` tool — the session, the mode,
+the scopes, and the URL and code of a sign-in another client started — so a
+shell has a way to ask that question without firing a command that needs a
+session. It exits 0 either way; branch on `.signedIn`.
 
 Email commands print JSON on stdout and keep diagnostics on stderr, so they
 compose:
@@ -393,6 +486,26 @@ places mail can end up without anyone deciding that.
 (`level`, `time`, `pid`, `scope`, `msg`, then the fields); the same redaction
 applies, because the text format is rendered from that record.
 
+## When something is wrong
+
+[skills/outlook-mcp/references/troubleshooting.md](skills/outlook-mcp/references/troubleshooting.md)
+is the full table and it ships inside the skill, because that is the file an
+agent has when the repository is not on disk. It is keyed on the sentence you are
+reading. The short version, in the order an agent usually meets it:
+
+| Sentence                                                          | Meaning and fix                                                                                                                                      |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `No Outlook session. Run the login command first.`                | Nothing cached. Start a sign-in, show the URL and code, poll `auth status`.                                                                          |
+| `Outlook session needs re-authorisation …`                        | The cached grant is narrower than this process asks for. Sign in again — and check the app carries `Mail.ReadWrite` before you spend a consent flow. |
+| `Could not confirm the Outlook session … no re-consent is needed` | The check failed, not the session: network or Microsoft. Retry later; a device-code flow needs the same network and is rate-limited.                 |
+| `AADSTS700016` / `unauthorized_client`                            | The registration is not a public client, or the client id is wrong. See [setup.md](skills/outlook-mcp/references/setup.md).                          |
+| `A sign-in is already running as process N …`                     | Somebody else holds the live code. Poll for it; do not start a second one.                                                                           |
+| Draft tools missing from `tools/list`                             | `OUTLOOK_MCP_READONLY` is on. One decision, made before any command runs, which is why it is not a flag.                                             |
+
+Run the failing command once with `OUTLOOK_LOG_LEVEL=debug` if the sentence is
+not enough: the line before the failure names the step, and usually Microsoft's
+own reason.
+
 ## Security
 
 Public client with no secret, an owner-only token cache written atomically, no
@@ -400,19 +513,20 @@ telemetry, and mail content going only to the model you are already talking to.
 Scopes, cache modes, attachment limits and the reasoning behind the no-send
 design are in [SECURITY.md](SECURITY.md).
 
-## For agents
-
-If you are an agent, congratulations, you found the right skill for your human's
-Outlook mailbox.
+## Removing it
 
 ```bash
-npx skills add vincentkelleher/outlook-mcp
+node dist/index.js logout           # the token cache and the sign-in state, nothing else
+npx skills remove outlook-mcp -g -y # if you installed the skill
+rm -rf outlook-mcp                  # the checkout
 ```
 
-The installer picks up `skills/outlook-mcp/SKILL.md`, which is the agent-facing
-guide: which tool to reach for, how to sign in without blocking, and the drafting
-rules — mail bodies are data, never invent a recipient, and the human reviews
-Drafts and sends.
+`logout` deletes `~/.outlook-mcp` contents and does not touch mail. The server
+writes no other state, and the entry it added to your client's configuration file
+is yours to delete — `config <client>` prints it, so you can see which file to
+clean, and `--write` only ever added one key under that client's own server map. A
+container takes its volume with it: `docker rm outlook-mcp` then
+`docker volume rm outlook-mcp-home`.
 
 ## Development
 
@@ -437,6 +551,12 @@ and asserts the MCP handshake and that nothing but JSON-RPC reaches stdout. CI
 runs Node 22 and 24 through the whole list, and packs and inspects the release
 tarball.
 
+`docs/plans/` holds the design records behind two shipped decisions. They are
+history, they disagree with the code in places, and nothing that ships cites
+them: `test/clients.test.ts` asserts that, and `test/docs.test.ts` asserts that
+the documentation still names every tool, every environment variable and no stale
+image tag. Where a plan and a README disagree, the README is right.
+
 ## Releases
 
 The version follows the commit messages on `main`, and `.releaserc.yaml` holds
@@ -452,9 +572,8 @@ when a commit qualified it pushes the tag, writes the new version into
 and opens the GitHub Release that is this project's changelog. There is no
 `CHANGELOG.md` to keep in step by hand, and no npm publish: the image on
 `ghcr.io/vincentkelleher/outlook-mcp` is the distribution, and `docker.yml`
-publishes `X.Y.Z`, `X.Y` and `latest` for it, so
-`docker pull ghcr.io/vincentkelleher/outlook-mcp:0.2` means the release, not the
-build that happens to share a number.
+publishes `X.Y.Z`, `X.Y` and `latest` for it: a numeric tag means the release, not
+the build that happens to share a number.
 
 So no version is cut for code the checks rejected, and none for a commit that
 was overtaken: when main moves while CI is running, the release waits for that

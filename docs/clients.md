@@ -46,12 +46,17 @@ sources, which need Node 22.18 or newer.
 Two shortcuts exist and neither is documented by npm as supported:
 
 ```bash
-# git specifier: needs git on the PATH
-npx -y github:vincentkelleher/outlook-mcp#v0.1.0
-
-# release tarball produced by `npm pack` in CI
-npm install https://github.com/vincentkelleher/outlook-mcp/releases/download/v0.1.0/outlook-mcp-0.1.0.tgz
+# git specifier: needs git on the PATH, and an immutable tag rather than a branch
+npx -y github:vincentkelleher/outlook-mcp#<the tag you want>
 ```
+
+A tarball URL of the shape
+`https://github.com/vincentkelleher/outlook-mcp/releases/download/<tag>/outlook-mcp-<version>.tgz`
+**is not one to use today**: the releases carry no assets — checked against
+GitHub's API for the current release — because a release here is a tag, notes and
+the image, and CI's `npm pack` output is kept as a 7-day workflow artefact for
+inspection only. An agent that tries the URL gets a 404, so do not try it. What
+follows still holds for whoever attaches one, and for a private mirror of it.
 
 Checked against docs.npmjs.com:
 
@@ -77,12 +82,17 @@ Checked against docs.npmjs.com:
   override that.
 - `engines` is advisory unless the user turns on `engine-strict`. It is a warning,
   not a guard.
-- Pin to an immutable tag or sha (`#v0.1.0`), never a floating branch: npm
+- Pin to an immutable tag or sha (`#vX.Y.Z`), never a floating branch: npm
   rebuilds a git dependency for every install.
 
 And a cold clone-and-install can outlast a client's patience: Codex gives a
 server 10 seconds to start, Claude Code has an `MCP_TIMEOUT` startup budget. If
 you use a one-liner, raise both.
+
+When any of this fails, the symptom is usually the client saying the server died
+on startup. [../skills/outlook-mcp/references/troubleshooting.md](../skills/outlook-mcp/references/troubleshooting.md)
+keys the failure sentences on what you are reading, including `prepare` never
+running and leaving no `dist/`.
 
 ## Matrix
 
@@ -315,8 +325,12 @@ docker run -d --name outlook-mcp \
   -p 127.0.0.1:3939:3939 \
   -v outlook-mcp-home:/data \
   -e OUTLOOK_OAUTH_CLIENT_ID=your-application-client-id \
-  ghcr.io/vincentkelleher/outlook-mcp:0.1.0
+  ghcr.io/vincentkelleher/outlook-mcp:latest
 ```
+
+`latest` so these words cannot go stale; pin `X.Y.Z` where a run has to mean the
+same server twice. `node dist/index.js config docker` prints this command at the
+version of the code you have, which is the number to copy.
 
 The container serves Streamable HTTP, so the entry a client reads is a URL and
 not a command — there is no `node`, no path, and no client id in it:
