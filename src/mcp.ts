@@ -54,6 +54,10 @@ const httpLog = logger("http");
  * instance and whatever the client opens on it, and the port authenticates
  * nobody, so the cap is the only thing keeping a curious local process from
  * opening sessions without end.
+ *
+ * Reaching it is not a refusal on its own: the room is taken back from the
+ * longest-idle session first, because a client that dies quietly leaves its
+ * session behind and a full house is usually full of sessions nobody owns.
  */
 const maxSessions = 32;
 
@@ -437,7 +441,18 @@ function isInitialize(value: unknown): boolean {
  */
 export async function startHttp(
   deps: ToolDeps,
-  options: { host?: string; port?: number } = {},
+  options: {
+    host?: string;
+    port?: number;
+    /**
+     * The idle window and the sweep period in milliseconds, for a test that
+     * cannot wait a day — the smallest window the environment can name is a
+     * minute, which makes a janitor test either slow or untestable. Production
+     * leaves both unset and reads the config.
+     */
+    sessionIdleMs?: number;
+    sweepIntervalMs?: number;
+  } = {},
 ): Promise<HttpHandle> {
   const host = options.host ?? deps.config.httpHost;
   const port = options.port ?? deps.config.httpPort;
@@ -463,25 +478,65 @@ export async function startHttp(
     });
   }
 
+  /**
+   * Drop a session and close what it holds. A session that the transport closed
+   * itself is already out of the map, so the guard makes this safe to call twice
+   * for one id.
+   */
+  function retire(
+    id: string,
+    session: Session,
+    reason: string,
+    fields: Record<string, unknown>,
+  ): void {
+    if (!sessions.delete(id)) return;
+    session.log.info(reason, fields);
+    void session.transport.close().catch(() => undefined);
+    void session.server.close().catch(() => undefined);
+  }
+
+  /**
+   * Of the sessions with nothing connected, the one gone unused longest. A
+   * session somebody is using is never the victim, which is why a cap refusal
+   * is still possible with a full house of live clients.
+   */
+  function leastRecent(): { id: string; session: Session } | undefined {
+    let oldest: { id: string; session: Session } | undefined;
+    for (const [id, session] of sessions) {
+      if (session.connected > 0) continue;
+      if (!oldest || session.lastSeen < oldest.session.lastSeen)
+        oldest = { id, session };
+    }
+    return oldest;
+  }
+
+  /** How long a session has gone unused. */
+  function idleMsOf(session: Session): number {
+    return Date.now() - session.lastSeen;
+  }
+
   // A session nobody has used, and nothing is connected to, is a client that
   // left without saying so. Sweep on a fraction of the idle window so a short
   // setting is still honoured, and never let the janitor hold the process open.
-  const idleMs = deps.config.sessionIdleMinutes * 60_000;
+  const idleMs =
+    options.sessionIdleMs ?? deps.config.sessionIdleMinutes * 60_000;
   const sweep = setInterval(
     () => {
       for (const [id, session] of sessions) {
         if (session.connected > 0 || Date.now() - session.lastSeen < idleMs)
           continue;
-        sessions.delete(id);
-        session.log.info("session retired: idle past the configured window", {
-          idleMinutes: Math.round((Date.now() - session.lastSeen) / 60_000),
-          windowMinutes: deps.config.sessionIdleMinutes,
-        });
-        void session.transport.close().catch(() => undefined);
-        void session.server.close().catch(() => undefined);
+        retire(
+          id,
+          session,
+          "session retired: idle past the configured window",
+          {
+            idleSeconds: Math.round(idleMsOf(session) / 1_000),
+            windowSeconds: Math.round(idleMs / 1_000),
+          },
+        );
       }
     },
-    Math.max(1_000, Math.floor(idleMs / 4)),
+    options.sweepIntervalMs ?? Math.max(1_000, Math.floor(idleMs / 4)),
   );
   sweep.unref();
 
@@ -594,16 +649,41 @@ export async function startHttp(
         return;
       }
       if (sessions.size >= maxSessions) {
-        // The cap is the only thing holding an unauthenticated port shut, so the
-        // moment it bites is the moment somebody should see it.
-        httpLog.warn("refused a new session: the cap is reached", {
-          maxSessions,
-          sessions: sessions.size,
-        });
-        respondJson(res, 503, {
-          error: `${maxSessions} sessions are already open on this server; close one before opening another.`,
-        });
-        return;
+        // The idle window is a day and the cap is 32, so the cap is what a
+        // restarting client actually meets: 32 sessions that outlived their
+        // clients, and nobody able to connect. Take one back rather than
+        // punishing the client that behaved.
+        const victim = leastRecent();
+        if (victim) {
+          // Both halves of the event deserve a line: the cap biting is the
+          // pressure somebody has to see, and the retired session has to say
+          // why it went.
+          httpLog.warn("retired a session to make room for a new one", {
+            retiredSessionId: victim.id,
+            // Milliseconds here: under churn the victim is younger than a second,
+            // and a rounded 0 says nothing about which session went.
+            idleMs: idleMsOf(victim.session),
+            sessions: sessions.size,
+            maxSessions,
+          });
+          retire(
+            victim.id,
+            victim.session,
+            "session retired: gave its place to a new client",
+            { idleMs: idleMsOf(victim.session) },
+          );
+        } else {
+          // Every session has something connected: this server is genuinely
+          // full, and the answer is still a 503 worth warning about.
+          httpLog.warn("refused a new session: the cap is reached", {
+            maxSessions,
+            sessions: sessions.size,
+          });
+          respondJson(res, 503, {
+            error: `${maxSessions} sessions are already open on this server, each with a client connected; close one before opening another.`,
+          });
+          return;
+        }
       }
 
       // The id exists after the server that logs with it does, so the session's

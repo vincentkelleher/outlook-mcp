@@ -108,10 +108,12 @@ function fakeDeps(config: Config): ToolDeps {
 async function serving(
   t: TestContext,
   env: Record<string, string | undefined> = {},
+  lifecycle: { sessionIdleMs?: number; sweepIntervalMs?: number } = {},
 ) {
   const handle = await startHttp(fakeDeps(configFor(t, env)), {
     host: "127.0.0.1",
     port: 0,
+    ...lifecycle,
   });
   t.after(() => handle.close());
   return handle;
@@ -342,6 +344,64 @@ test("a DELETE retires its session, and the count follows it", async (t) => {
   assert.equal(reused.status, 404);
 });
 
+test("a session whose client died without a DELETE is retired by the janitor", async (t) => {
+  // The window and the sweep are set here rather than through the environment
+  // because the smallest window a setting can name is a minute, and the point is
+  // that the janitor runs, not that a minute passes.
+  const handle = await serving(
+    t,
+    {},
+    { sessionIdleMs: 150, sweepIntervalMs: 25 },
+  );
+  const sessionId = await openedOf(handle.url);
+  assert.equal(
+    (await healthOf(handle)).sessions,
+    1,
+    "the abandoned session is counted before it is retired",
+  );
+
+  await untilSessions(handle, 0);
+  // Gone, not merely uncounted: the id no longer answers.
+  assert.equal(
+    await knownOf(handle.url, sessionId),
+    false,
+    "a retired session id still answers",
+  );
+});
+
+test("a house full of dead sessions gives its place to a new client", async (t) => {
+  // The idle window is a day and the cap is 32, so this is what a restarting
+  // client actually met: 32 sessions that outlived their clients, and every new
+  // one refused with 503 for something it did not do.
+  const handle = await serving(t);
+  const ids: string[] = [];
+  for (let filled = 0; filled < 32; filled++)
+    ids.push(await openedOf(handle.url));
+  assert.equal((await healthOf(handle)).sessions, 32, "the house filled up");
+
+  const newest = await openedOf(handle.url);
+  assert.equal(
+    (await healthOf(handle)).sessions,
+    32,
+    "making room kept the house the same size",
+  );
+  assert.equal(
+    await knownOf(handle.url, ids[0]),
+    false,
+    "the longest-idle session should have given its place",
+  );
+  assert.equal(
+    await knownOf(handle.url, ids[1]),
+    true,
+    "the rest were untouched",
+  );
+  assert.equal(
+    await knownOf(handle.url, newest),
+    true,
+    "the new client was served",
+  );
+});
+
 test("readonly mode reaches the tool list over HTTP too", async (t) => {
   const handle = await serving(t, { OUTLOOK_MCP_READONLY: "1" });
   const client = new Client({ name: "http-test", version: "0.0.0" });
@@ -449,6 +509,73 @@ function refusalOf(admission: Admission): { status: number; reason: string } {
 
 function portOf(handle: { url: string }): number {
   return Number(new URL(handle.url).port);
+}
+
+/**
+ * Open a session and then behave like a client that dies: the SDK's client
+ * closes its connection on `close()` without sending `DELETE`, so this is the
+ * whole of what the server is left with.
+ */
+async function openedOf(url: string): Promise<string> {
+  const opened = await raw({
+    url,
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "abandoning", version: "0" },
+      },
+    }),
+  });
+  assert.equal(opened.status, 200, opened.body);
+  return String(opened.headers["mcp-session-id"]);
+}
+
+/** Whether this server still answers for a session id at all. */
+async function knownOf(url: string, sessionId: string): Promise<boolean> {
+  const asked = await raw({
+    url,
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "mcp-session-id": sessionId,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    }),
+  });
+  // Only this server says 404 for a session; whatever the transport makes of a
+  // notification is beside the point of whether it knows the id.
+  return asked.status !== 404;
+}
+
+/** Wait for the janitor on its own schedule instead of guessing a sleep. */
+async function untilSessions(
+  handle: { url: string },
+  expected: number,
+  withinMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  for (;;) {
+    if ((await healthOf(handle)).sessions === expected) return;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(
+    (await healthOf(handle)).sessions,
+    expected,
+    `sessions never reached ${expected}`,
+  );
 }
 
 async function healthOf(handle: { url: string }): Promise<{

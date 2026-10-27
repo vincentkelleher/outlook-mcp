@@ -222,10 +222,15 @@ than a process you started can reach a mailbox, so it is bounded deliberately:
 - **The response body says nothing useful to a stranger** — a refusal names the
   variable to set, nothing about the mailbox — and `/health` reports only the
   version, the mode and a session count, never mail and never an account.
-- **Bodies are capped at 4 MiB** and sessions at 32, with an idle session retired
-  after `OUTLOOK_MCP_SESSION_IDLE_MINUTES` (default a day) once nothing is
-  connected to it, so a client that disconnects without saying so cannot pile up
-  server instances for the life of the container.
+- **Bodies are capped at 4 MiB** and sessions at 32. Once nothing is connected to
+  a session, `OUTLOOK_MCP_SESSION_IDLE_MINUTES` (default a day) retires it; and
+  because a day is far longer than the rate at which restarting clients arrive, a
+  house already holding 32 gives up its longest-idle member to admit the next
+  client rather than refusing it. So a client that disconnects without saying so
+  can neither pile up server instances for the life of the container, nor lock out
+  the client that behaved. A session with something connected is never the one
+  retired; an idle one can be, by anything the port admits, which is the same
+  exposure as being handed the mailbox outright.
 
 What running it in a container does change is where the secrets live: the token
 cache moves to `/data`, so the volume holds a refreshable session. Give that
