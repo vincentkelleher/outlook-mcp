@@ -52,6 +52,17 @@ test("CLI exposes every documented command", (t) => {
   assert.match(emails.stdout, /search \[options\] <query>/);
   assert.match(root.stdout, /config \[options\] <client>/);
   assert.match(root.stdout, /serve \[options\]/);
+  // The CLI half of `auth_status`: an agent with no MCP still has to be able to
+  // poll a sign-in without firing a command that needs one.
+  assert.match(root.stdout, /^\s+auth\s/m);
+  const auth = outlook(home, "auth", "--help");
+  assert.equal(auth.exitCode, 0);
+  assert.match(auth.stdout, /status/);
+  // Which release this entry is, so a skill and a server can be checked against
+  // each other before anybody trusts the tools they agree on.
+  const version = outlook(home, "--version");
+  assert.equal(version.exitCode, 0);
+  assert.match(version.stdout, /^\d+\.\d+\.\d+/);
   // Drafts are MCP-only on purpose: a human writes them in Outlook, not here.
   assert.equal(
     `${root.stdout}${emails.stdout}`.toLowerCase().includes("draft"),

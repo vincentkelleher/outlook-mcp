@@ -306,7 +306,7 @@ export async function runLogin(config: Config): Promise<void> {
   ) {
     // Printed, not only logged: a person who ran `login` in a terminal is owed
     // the sentence, whatever the log level says.
-    const notice = `A sign-in is already running as process ${existing.pid}, so this one did not start and no second code was issued. Ask the agent for auth_status to see the code that is live, or sign out to clear it.`;
+    const notice = `A sign-in is already running as process ${existing.pid}, so this one did not start and no second code was issued. Run \`outlook auth status\` (or call the auth_status tool) for the code that is live, or \`outlook logout\` to clear it.`;
     console.error(notice);
     log.warn("this sign-in stood down for one already running", {
       owner: existing.pid,

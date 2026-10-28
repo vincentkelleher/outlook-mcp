@@ -7,13 +7,19 @@ import {
   renderClient,
   resolveEntry,
 } from "./core/clients.ts";
-import { loadConfig, loadEnvFile, scopesFor } from "./core/config.ts";
+import {
+  loadConfig,
+  loadEnvFile,
+  packageVersion,
+  scopesFor,
+} from "./core/config.ts";
 import { mcpPath } from "./core/http.ts";
 import { serve, startHttp } from "./mcp.ts";
 import { createToolDeps } from "./tools.ts";
 import {
   alreadySignedIn,
   beginLogin,
+  readLoginState,
   runLogin,
   startLogin,
 } from "./core/device-login.ts";
@@ -109,6 +115,9 @@ export async function main(
   const program = new Command()
     .name("outlook")
     .description("Read Outlook email; with no arguments, serve MCP over stdio")
+    // The version of the code, which is how an agent checks that the skill it is
+    // following and the server it is calling were released together.
+    .version(packageVersion(), "-V, --version")
     .hook("preAction", (_thisCommand, actionCommand) => {
       started = stopwatch();
       log.info(`command ${commandPath(actionCommand)}`, {
@@ -224,6 +233,42 @@ export async function main(
     .action(() => {
       logout(config);
       console.error("Signed out.");
+    });
+
+  // The CLI half of the `auth_status` tool, and the same fields: an agent that
+  // has no MCP has to be able to poll a sign-in without firing a command that
+  // needs one, and `No Outlook session` is a poor way to ask a question.
+  const authGroup = program
+    .command("auth")
+    .description("Ask about the saved Outlook session");
+
+  authGroup
+    .command("status")
+    .description(
+      "Print the sign-in state as JSON, including the URL and code of a sign-in another client started",
+    )
+    .action(async () => {
+      const status = await (deps.authStatus ?? (() => auth.authStatus()))();
+      const state = readLoginState(config);
+      const report = {
+        ...status,
+        readonly: config.readonly,
+        scopes: scopesFor(config.readonly),
+        lastLoginError: state?.state === "error" ? state.message : undefined,
+        // The code belongs to the flow and not to whoever started it, so this is
+        // where a polling caller finds it — the same reason the tool carries it.
+        ...(state?.state === "pending"
+          ? {
+              signInPending: true,
+              verificationUri: state.verificationUri,
+              userCode: state.userCode,
+              expiresAt: state.expiresAt,
+            }
+          : {}),
+      };
+      // Exit 0 either way: this is a report, not a gate, and a caller that wants
+      // to branch on it has `.signedIn` in the JSON.
+      console.log(JSON.stringify(report, null, 2));
     });
 
   program

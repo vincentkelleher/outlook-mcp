@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { main } from "../src/cli.ts";
+import { loadConfig, scopesFor } from "../src/core/config.ts";
+import { writeLoginState } from "../src/core/device-login.ts";
 import type { CliDeps } from "../src/cli.ts";
 import type { Graph } from "../src/core/graph.ts";
 import {
@@ -219,6 +224,63 @@ test("login --background reports an existing session instead of starting a secon
   assert.equal(printed.account, "someone@example.com");
   assert.match(printed.instructions, /Already signed in/);
   assert.deepEqual(calls.list, []);
+});
+
+test("auth status reports the session, the mode, and a code another process started", async () => {
+  const home = mkdtempSync(join(tmpdir(), "outlook-mcp-cli-"));
+  const saved = {
+    OUTLOOK_MCP_HOME: process.env.OUTLOOK_MCP_HOME,
+    OUTLOOK_MCP_STATE_DIR: process.env.OUTLOOK_MCP_STATE_DIR,
+  };
+  process.env.OUTLOOK_MCP_HOME = home;
+  process.env.OUTLOOK_MCP_STATE_DIR = join(home, "state");
+  const config = loadConfig({ ...process.env });
+  try {
+    const { graph, calls } = fakeGraph();
+    const authStatus = async () => ({
+      signedIn: false,
+      account: "someone@example.com",
+      reason: "needsConsent" as const,
+      authority: "https://login.microsoftonline.com/consumers/",
+      cachePath: join(home, "msal-cache.json"),
+    });
+
+    const bare = await runCli(["auth", "status"], { graph, authStatus });
+    assert.equal(bare.failure, undefined);
+    const printed = JSON.parse(bare.stdout);
+    assert.equal(printed.signedIn, false);
+    assert.equal(printed.reason, "needsConsent");
+    // The mode and the permissions behind it, so a missing write tool explains
+    // itself here instead of being guessed at — the tool says the same.
+    assert.equal(printed.readonly, false);
+    assert.deepEqual(printed.scopes, scopesFor(false));
+
+    // A code belongs to the flow and not to whoever started it, so this is where
+    // a caller with no MCP finds the one that is live — which is the whole
+    // polling loop, from a shell.
+    writeLoginState(config, {
+      state: "pending",
+      pid: 4242,
+      verificationUri: "https://microsoft.com/devicelogin",
+      userCode: "ABC-XYZ123",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const pending = await runCli(["auth", "status"], { graph, authStatus });
+    const carried = JSON.parse(pending.stdout);
+    assert.equal(carried.signInPending, true);
+    assert.equal(carried.verificationUri, "https://microsoft.com/devicelogin");
+    assert.equal(carried.userCode, "ABC-XYZ123");
+
+    // A report, not a gate: it asked nothing of the mailbox, and it exits 0
+    // whoever reads `.signedIn` from the JSON.
+    assert.deepEqual(calls.list, []);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("limits are validated against each command maximum", async () => {
